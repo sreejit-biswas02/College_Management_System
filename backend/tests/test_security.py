@@ -309,14 +309,74 @@ def test_invalid_production_configuration_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings(**{**base_kwargs, "FRONTEND_URL": "http://portal.college.edu"})
 
-    # Missing sslmode=require rejected in production
-    with pytest.raises(ValidationError):
-        Settings(
-            **{
-                **base_kwargs,
-                "DATABASE_URL": "postgresql+psycopg://u:p@db.internal:5432/cms",
-            }
-        )
+    # Missing sslmode, non-required sslmode, or duplicate sslmode rejected
+    for bad_db_url in (
+        "postgresql+psycopg://u:p@db.internal:5432/cms",
+        "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=disable",
+        "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=prefer",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?SSLMODE=allow",
+        "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=require&sslmode=disable",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?sslmode=require&SSLMODE=prefer",
+        "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=require&sslmode=require",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(**{**base_kwargs, "DATABASE_URL": bad_db_url})
+
+    # Required SSL modes and case variations accepted (Neon & psycopg URLs)
+    for good_db_url in (
+        "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=require",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?sslmode=require",
+        "postgresql+psycopg://u:p@db.internal:5432/cms?SSLMODE=REQUIRE",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?SslMode=Verify-Full",
+    ):
+        cfg = Settings(**{**base_kwargs, "DATABASE_URL": good_db_url})
+        assert cfg.effective_database_url.startswith("postgresql+psycopg://")
+
+
+def test_production_direct_database_url_ssl_validation() -> None:
+    """Production DIRECT_DATABASE_URL enforces single required SSL mode."""
+    base_kwargs = {
+        "_env_file": None,
+        "ENVIRONMENT": "production",
+        "DEBUG": False,
+        "DATABASE_URL": "postgresql+psycopg://u:p@db.internal:5432/cms?sslmode=require",
+        "SECRET_KEY": "A" * 48,
+        "FRONTEND_URL": "https://portal.college.edu",
+    }
+
+    for good_direct_url in (
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?sslmode=require",
+        "postgresql+psycopg://u:p@ep-neon.aws.neon.tech/neondb?sslmode=verify-full",
+    ):
+        cfg = Settings(**{**base_kwargs, "DIRECT_DATABASE_URL": good_direct_url})
+        assert cfg.effective_migration_database_url.startswith("postgresql+psycopg://")
+
+    for bad_direct_url in (
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?sslmode=disable",
+        "postgresql://u:p@ep-neon.aws.neon.tech/neondb?sslmode=require&sslmode=disable",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(**{**base_kwargs, "DIRECT_DATABASE_URL": bad_direct_url})
+
+
+def test_storage_timeout_configuration() -> None:
+    """Storage timeout uses default when omitted and validates explicit bounds."""
+    base_kwargs = {
+        "_env_file": None,
+        "DATABASE_URL": "postgresql+psycopg://u:p@localhost:5432/cms",
+        "SECRET_KEY": "dev-secret-key",
+    }
+
+    default_cfg = Settings(**base_kwargs)
+    assert default_cfg.STORAGE_TIMEOUT_SECONDS == 15
+
+    explicit_cfg = Settings(**{**base_kwargs, "STORAGE_TIMEOUT_SECONDS": 30})
+    assert explicit_cfg.STORAGE_TIMEOUT_SECONDS == 30
+
+    for invalid_timeout in (0, -5, 121):
+        with pytest.raises(ValidationError):
+            Settings(**{**base_kwargs, "STORAGE_TIMEOUT_SECONDS": invalid_timeout})
 
 
 def test_cors_restrictions(client: TestClient) -> None:

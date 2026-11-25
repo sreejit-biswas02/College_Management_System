@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -135,12 +136,35 @@ class Settings(BaseSettings):
             if any(not o.startswith("https://") for o in self.cors_origins):
                 raise ValueError("Production FRONTEND_URL origins must use https://.")
 
-            if "sslmode=require" not in self.DATABASE_URL:
+            if not self._has_required_ssl(self.DATABASE_URL):
                 raise ValueError(
                     "Production DATABASE_URL must require SSL (sslmode=require)."
                 )
 
+            if self.DIRECT_DATABASE_URL and not self._has_required_ssl(
+                self.DIRECT_DATABASE_URL
+            ):
+                raise ValueError(
+                    "Production DIRECT_DATABASE_URL must require SSL (sslmode=require)."
+                )
+
         return self
+
+    @staticmethod
+    def _has_required_ssl(url: str) -> bool:
+        """Return True when a PostgreSQL URL enforces SSL via query params."""
+        parsed = urlsplit(url)
+        if not parsed.scheme.lower().startswith("postgres"):
+            return False
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+        ssl_modes = [
+            val.strip().lower()
+            for key, values in query_params.items()
+            if key.lower() == "sslmode"
+            for val in values
+        ]
+        required_modes = {"require", "verify-ca", "verify-full"}
+        return len(ssl_modes) == 1 and ssl_modes[0] in required_modes
 
 
 @lru_cache

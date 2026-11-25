@@ -25,6 +25,8 @@ services:
         value: "1800"
       - key: STORAGE_PROVIDER
         value: r2
+      - key: STORAGE_TIMEOUT_SECONDS
+        value: "15"
       - key: SIGNED_URL_EXPIRE_SECONDS
         value: "300"
       - key: SECRET_KEY
