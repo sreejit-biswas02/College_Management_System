@@ -202,12 +202,19 @@ async function renderStudentAssignments(container) {
 
     tableEl.querySelectorAll(".stu-materials-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const files = await filesApi.listAssignmentAttachments(btn.dataset.id);
-        openModal({
-          title: `Materials: ${btn.dataset.title}`,
-          bodyHtml: `<div id="stu-mat-list">${renderFileListHtml(files)}</div>`,
-        });
-        bindFileListActions(document.getElementById("stu-mat-list"));
+        btn.disabled = true;
+        try {
+          const files = await filesApi.listAssignmentAttachments(btn.dataset.id);
+          openModal({
+            title: `Materials: ${btn.dataset.title}`,
+            bodyHtml: `<div id="stu-mat-list">${renderFileListHtml(files)}</div>`,
+          });
+          bindFileListActions(document.getElementById("stu-mat-list"));
+        } catch (err) {
+          showToast(err.message || "Failed to load assignment materials.", "error");
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
 

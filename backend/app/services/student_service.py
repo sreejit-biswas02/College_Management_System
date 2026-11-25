@@ -1,5 +1,7 @@
 """Administrative and self-service business logic for Student management."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -82,6 +84,7 @@ def list_students(
     department_id: int | None = None,
     semester_number: int | None = None,
     is_active: bool | None = None,
+    is_archived: bool = False,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Student], int]:
@@ -89,7 +92,7 @@ def list_students(
     stmt = _student_query().join(Student.user)
     count_stmt = select(func.count(Student.id)).join(Student.user)
 
-    filters = []
+    filters = [Student.is_archived == is_archived]
     if search:
         pattern = f"%{search.strip()}%"
         filters.append(
@@ -180,6 +183,49 @@ def set_student_active_status(
 ) -> Student:
     """Activate or deactivate a student's user account."""
     student = get_student_by_id(db, student_id)
+    if is_active and student.is_archived:
+        raise ConflictError(
+            "Archived student cannot be activated directly; restore first."
+        )
     student.user.is_active = is_active
+    db.commit()
+    return get_student_by_id(db, student.id)
+
+
+def archive_student(
+    db: Session,
+    student_id: int,
+    actor_user_id: int,
+) -> Student:
+    """Soft-delete/archive a student, disabling login while retaining records."""
+    student = db.scalar(
+        select(Student).where(Student.id == student_id).with_for_update()
+    )
+    if student is None:
+        raise NotFoundError("Student not found.")
+    if student.is_archived:
+        raise ConflictError("Student is already archived.")
+
+    student.is_archived = True
+    student.archived_at = datetime.now(UTC)
+    student.archived_by_user_id = actor_user_id
+    student.user.is_active = False
+    db.commit()
+    return get_student_by_id(db, student.id)
+
+
+def restore_student(db: Session, student_id: int) -> Student:
+    """Unarchive a student profile while keeping login disabled until activated."""
+    student = db.scalar(
+        select(Student).where(Student.id == student_id).with_for_update()
+    )
+    if student is None:
+        raise NotFoundError("Student not found.")
+    if not student.is_archived:
+        raise ConflictError("Student is not archived.")
+
+    student.is_archived = False
+    student.archived_at = None
+    student.archived_by_user_id = None
     db.commit()
     return get_student_by_id(db, student.id)

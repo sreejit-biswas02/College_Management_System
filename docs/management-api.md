@@ -24,11 +24,13 @@ All endpoints are prefixed with `/api/v1` and require a valid Bearer JWT (`Autho
 
 ### A. Admin — Students (`/api/v1/admin/students`)
 - `POST /api/v1/admin/students` — Create user + student profile (`201`).
-- `GET /api/v1/admin/students?search=&department_id=&semester_number=&is_active=&page=1&page_size=20`
+- `GET /api/v1/admin/students?search=&department_id=&semester_number=&is_active=&is_archived=false&page=1&page_size=20` (excludes archived students by default; pass `is_archived=true` to list archived students).
 - `GET /api/v1/admin/students/{student_id}`
 - `PATCH /api/v1/admin/students/{student_id}`
-- `PATCH /api/v1/admin/students/{student_id}/activate`
+- `PATCH /api/v1/admin/students/{student_id}/activate` (rejected with `409` if student is archived)
 - `PATCH /api/v1/admin/students/{student_id}/deactivate`
+- `DELETE /api/v1/admin/students/{student_id}` — Soft-delete / archive student (`is_archived=true`, `user.is_active=false`) while retaining all enrollments, attendance, submissions, and grades (`409` if already archived).
+- `POST /api/v1/admin/students/{student_id}/restore` — Unarchives student profile (`is_archived=false`); `user.is_active` remains `false` until explicitly activated.
 
 ### B. Admin — Faculty (`/api/v1/admin/faculty`)
 - `POST /api/v1/admin/faculty` — Create user + faculty profile (`201`).
@@ -61,10 +63,10 @@ All endpoints are prefixed with `/api/v1` and require a valid Bearer JWT (`Autho
 - `PATCH /api/v1/admin/courses/{course_id}`
 
 ### F. Admin — Course Offerings (`/api/v1/admin/course-offerings`)
-- `POST /api/v1/admin/course-offerings` (`201`)
+- `POST /api/v1/admin/course-offerings` (`201`) — Assigns faculty via `faculty_employee_id` (recommended) or `faculty_id` (stored internally as `faculty_id`; rejects inactive faculty with `422`).
 - `GET /api/v1/admin/course-offerings?semester_id=&faculty_id=&course_id=&section=&is_active=&page=1&page_size=20`
 - `GET /api/v1/admin/course-offerings/{offering_id}`
-- `PATCH /api/v1/admin/course-offerings/{offering_id}`
+- `PATCH /api/v1/admin/course-offerings/{offering_id}` — Supports updating faculty assignment via `faculty_employee_id` or `faculty_id` (rejects inactive faculty with `422`).
 - `PATCH /api/v1/admin/course-offerings/{offering_id}/activate`
 - `PATCH /api/v1/admin/course-offerings/{offering_id}/deactivate`
 

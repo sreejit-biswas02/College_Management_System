@@ -1,8 +1,12 @@
-import * as adminApi from "../api/adminApi.js";
+import * as adminApi from "../api/adminApi.js?v=2";
 import * as opsApi from "../api/operationsApi.js";
 import { renderDataTable } from "../components/dataTable.js";
 import { closeModal, openModal } from "../components/modal.js";
 import { renderPagination } from "../components/pagination.js";
+import {
+  initSearchableSelect,
+  renderSearchableSelectField,
+} from "../components/searchableSelect.js";
 import { showToast } from "../components/toast.js";
 import {
   escapeHtml,
@@ -15,6 +19,7 @@ import {
 const state = {
   page: 1,
   search: "",
+  showArchived: false,
 };
 
 function bindPagination(data, reload) {
@@ -32,23 +37,182 @@ function bindPagination(data, reload) {
   });
 }
 
-function openFormModal({ title, fieldsHtml, onSubmit }) {
+function openFormModal({ title, fieldsHtml, onMount, onSubmit }) {
   openModal({
     title,
     bodyHtml: `<form id="modal-entity-form">${fieldsHtml}<button class="btn btn-primary btn-block" type="submit">Save</button></form>`,
   });
-  document
-    .getElementById("modal-entity-form")
-    ?.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const formData = new FormData(e.target);
-      try {
-        await onSubmit(Object.fromEntries(formData.entries()));
-        closeModal();
-      } catch (err) {
-        showToast(err.message || "Operation failed.", "error");
+  const formEl = document.getElementById("modal-entity-form");
+  const selectors = onMount ? onMount(formEl) || [] : [];
+
+  formEl?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    let hasMissing = false;
+    for (const sel of selectors) {
+      if (sel?.required && !sel.ctrl?.getValue()) {
+        sel.ctrl?.setError(sel.errorMessage || "Please select an option.");
+        hasMissing = true;
       }
-    });
+    }
+    if (hasMissing) {
+      return;
+    }
+
+    const submitBtn = formEl.querySelector('button[type="submit"]');
+    const originalText = submitBtn ? submitBtn.textContent : "Save";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Saving...";
+    }
+    try {
+      const formData = new FormData(formEl);
+      await onSubmit(Object.fromEntries(formData.entries()));
+      selectors.forEach((sel) => sel?.ctrl?.destroy?.());
+      closeModal();
+    } catch (err) {
+      showToast(err.message || "Operation failed.", "error");
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText;
+      }
+    }
+  });
+}
+
+function mountDepartmentSelect(id = "dept-select") {
+  return {
+    required: true,
+    errorMessage: "Please select a department.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No active departments found.",
+      loadErrorMessage: "Failed to load departments.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listDepartments({
+          search,
+          is_active: true,
+          page,
+          page_size: pageSize,
+        }),
+      mapOption: (d) => ({
+        value: String(d.id),
+        label: `${d.code} — ${d.name}`,
+        description: d.description || "Active department",
+      }),
+    }),
+  };
+}
+
+function mountCourseSelect(id = "course-select") {
+  return {
+    required: true,
+    errorMessage: "Please select a course.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No courses found.",
+      loadErrorMessage: "Failed to load courses.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listCourses({ search, page, page_size: pageSize }),
+      mapOption: (c) => ({
+        value: String(c.id),
+        label: `${c.code} — ${c.title}`,
+        description: `${c.department.code} • ${c.credits} credits`,
+      }),
+    }),
+  };
+}
+
+function mountSemesterSelect(id = "semester-select") {
+  return {
+    required: true,
+    errorMessage: "Please select a semester.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No semesters found.",
+      loadErrorMessage: "Failed to load semesters.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listSemesters({ search, page, page_size: pageSize }),
+      mapOption: (s) => ({
+        value: String(s.id),
+        label: `${s.name} (${s.academic_year})`,
+        description: `Term ${s.term_number} • ${s.is_active ? "Active" : "Inactive"}`,
+      }),
+    }),
+  };
+}
+
+function mountFacultySelect(id = "faculty-select") {
+  return {
+    required: true,
+    errorMessage: "Please select an active faculty member.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No active faculty members found.",
+      loadErrorMessage: "Failed to load faculty members.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listFaculty({
+          search,
+          is_active: true,
+          page,
+          page_size: pageSize,
+        }),
+      mapOption: (f) => ({
+        value: String(f.id),
+        label: `${f.employee_id} — ${f.user.full_name}`,
+        description: `${f.designation} • ${f.department.code} • ${f.user.email}`,
+      }),
+    }),
+  };
+}
+
+function mountStudentSelect(id = "student-select") {
+  return {
+    required: true,
+    errorMessage: "Please select an active student.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No active students found.",
+      loadErrorMessage: "Failed to load students.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listStudents({
+          search,
+          is_archived: false,
+          is_active: true,
+          page,
+          page_size: pageSize,
+        }),
+      mapOption: (s) => ({
+        value: String(s.id),
+        label: `${s.roll_number} — ${s.user.full_name}`,
+        description: `${s.department.code} • Sem ${s.current_semester_number} • ${s.user.email}`,
+      }),
+    }),
+  };
+}
+
+function mountOfferingSelect(id = "offering-select") {
+  return {
+    required: true,
+    errorMessage: "Please select a course offering.",
+    ctrl: initSearchableSelect({
+      id,
+      emptyMessage: "No active course offerings found.",
+      loadErrorMessage: "Failed to load course offerings.",
+      fetchOptions: ({ search, page, pageSize }) =>
+        adminApi.listOfferings({
+          search,
+          is_active: true,
+          page,
+          page_size: pageSize,
+        }),
+      mapOption: (o) => ({
+        value: String(o.id),
+        label: `${o.course.code} — ${o.course.title} (Sec ${o.section})`,
+        description: `${o.semester.name} (${o.semester.academic_year}) • ${o.faculty.employee_id} — ${o.faculty.user.full_name}`,
+      }),
+    }),
+  };
 }
 
 async function renderAdminOverview(container) {
@@ -97,16 +261,23 @@ async function renderStudents(container) {
     page: state.page,
     page_size: 10,
     search: state.search,
+    is_archived: state.showArchived,
   });
 
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
-        ${renderSearchInput({
-          id: "entity-search",
-          placeholder: "Search name, email, roll...",
-          value: state.search,
-        })}
+        <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
+          ${renderSearchInput({
+            id: "entity-search",
+            placeholder: "Search name, email, roll...",
+            value: state.search,
+          })}
+          <select id="student-archive-filter" class="form-control" style="max-width:200px;" aria-label="Student archive filter">
+            <option value="false" ${!state.showArchived ? "selected" : ""}>Active &amp; Inactive</option>
+            <option value="true" ${state.showArchived ? "selected" : ""}>Archived Students</option>
+          </select>
+        </div>
         <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Student</button>
       </div>
       ${renderDataTable({
@@ -119,20 +290,28 @@ async function renderStudents(container) {
           {
             label: "Status",
             render: (r) =>
-              renderStatusBadge(
-                r.user.is_active ? "Active" : "Inactive",
-                r.user.is_active ? "success" : "danger"
-              ),
+              r.is_archived
+                ? renderStatusBadge("Archived", "warning")
+                : renderStatusBadge(
+                    r.user.is_active ? "Active" : "Inactive",
+                    r.user.is_active ? "success" : "danger"
+                  ),
           },
           {
             label: "Action",
             render: (r) =>
-              `<button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
-                r.user.is_active ? "Deactivate" : "Activate"
-              }</button>`,
+              r.is_archived
+                ? `<button class="btn btn-outline btn-sm restore-student-btn" data-id="${r.id}" data-name="${escapeHtml(r.user.full_name)}" data-email="${escapeHtml(r.user.email)}" data-roll="${escapeHtml(r.roll_number)}" type="button">Restore</button>`
+                : `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
+                      r.user.is_active ? "Deactivate" : "Activate"
+                    }</button>
+                    <button class="btn btn-danger btn-sm delete-student-btn" data-id="${r.id}" data-name="${escapeHtml(r.user.full_name)}" data-email="${escapeHtml(r.user.email)}" data-roll="${escapeHtml(r.roll_number)}" type="button">Delete</button>
+                  </div>`,
           },
         ],
         rows: data.items,
+        emptyTitle: state.showArchived ? "No archived students" : "No students found",
       })}
       ${renderPagination(data)}
     </section>
@@ -144,16 +323,109 @@ async function renderStudents(container) {
     renderStudents(container);
   });
 
+  document
+    .getElementById("student-archive-filter")
+    ?.addEventListener("change", (e) => {
+      state.showArchived = e.target.value === "true";
+      state.page = 1;
+      renderStudents(container);
+    });
+
   bindPagination(data, () => renderStudents(container));
 
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await adminApi.setStudentActive(
-        btn.dataset.id,
-        btn.dataset.next === "true"
-      );
-      showToast("Student status updated.", "success");
-      renderStudents(container);
+      btn.disabled = true;
+      try {
+        await adminApi.setStudentActive(
+          btn.dataset.id,
+          btn.dataset.next === "true"
+        );
+        showToast("Student status updated.", "success");
+        renderStudents(container);
+      } catch (err) {
+        showToast(err.message || "Failed to update student status.", "error");
+        btn.disabled = false;
+      }
+    });
+  });
+
+  container.querySelectorAll(".delete-student-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const { id, name, email, roll } = btn.dataset;
+      openModal({
+        title: "Archive Student Account",
+        bodyHtml: `
+          <div style="display:flex;flex-direction:column;gap:0.75rem;">
+            <p>Are you sure you want to archive this student?</p>
+            <div style="padding:0.75rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-muted);">
+              <div><strong>Name:</strong> ${escapeHtml(name)}</div>
+              <div><strong>Email:</strong> ${escapeHtml(email)}</div>
+              <div><strong>Roll Number:</strong> ${escapeHtml(roll)}</div>
+            </div>
+            <p class="text-muted">
+              The student's account will be archived and they will <strong>no longer be able to log in</strong>.
+            </p>
+            <p class="text-muted">
+              All academic records (enrollments, attendance, assignment submissions, and grades) will be <strong>retained</strong>.
+            </p>
+          </div>
+        `,
+        footerHtml: `
+          <button id="archive-cancel-btn" class="btn btn-outline" type="button">Cancel</button>
+          <button id="archive-confirm-btn" class="btn btn-danger" type="button">Archive Student</button>
+        `,
+      });
+
+      document
+        .getElementById("archive-cancel-btn")
+        ?.addEventListener("click", closeModal);
+      const confirmBtn = document.getElementById("archive-confirm-btn");
+      confirmBtn?.addEventListener("click", async () => {
+        confirmBtn.disabled = true;
+        try {
+          await adminApi.archiveStudent(id);
+          closeModal();
+          showToast("Student archived. Academic records retained.", "success");
+          await renderStudents(container);
+        } catch (err) {
+          showToast(err.message || "Failed to archive student.", "error");
+          confirmBtn.disabled = false;
+        }
+      });
+    });
+  });
+
+  container.querySelectorAll(".restore-student-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const { id, name, email, roll } = btn.dataset;
+      openModal({
+        title: "Restore Archived Student",
+        bodyHtml: `
+          <p>Restore <strong>${escapeHtml(name)}</strong> (${escapeHtml(roll)}, ${escapeHtml(email)}) to the main student list?</p>
+          <p class="text-muted" style="margin-top:0.5rem;">Login access remains disabled until you explicitly activate the account.</p>
+        `,
+        footerHtml: `
+          <button id="restore-cancel-btn" class="btn btn-outline" type="button">Cancel</button>
+          <button id="restore-confirm-btn" class="btn btn-primary" type="button">Restore Student</button>
+        `,
+      });
+      document
+        .getElementById("restore-cancel-btn")
+        ?.addEventListener("click", closeModal);
+      const confirmBtn = document.getElementById("restore-confirm-btn");
+      confirmBtn?.addEventListener("click", async () => {
+        confirmBtn.disabled = true;
+        try {
+          await adminApi.restoreStudent(id);
+          closeModal();
+          showToast("Student restored (account remains inactive).", "success");
+          await renderStudents(container);
+        } catch (err) {
+          showToast(err.message || "Failed to restore student.", "error");
+          confirmBtn.disabled = false;
+        }
+      });
     });
   });
 
@@ -164,10 +436,17 @@ async function renderStudents(container) {
         <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Password</label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
-        <div class="form-group"><label class="form-label">Department ID</label><input name="department_id" type="number" min="1" value="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "student-dept-select",
+          name: "department_id",
+          label: "Department",
+          placeholder: "Search department by code or name...",
+          required: true,
+        })}
         <div class="form-group"><label class="form-label">Roll Number</label><input name="roll_number" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Admission Year</label><input name="admission_year" type="number" value="2026" class="form-control" required /></div>
       `,
+      onMount: () => [mountDepartmentSelect("student-dept-select")],
       onSubmit: async (form) => {
         await adminApi.createStudent({
           ...form,
@@ -235,12 +514,18 @@ async function renderFaculty(container) {
   bindPagination(data, () => renderFaculty(container));
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await adminApi.setFacultyActive(
-        btn.dataset.id,
-        btn.dataset.next === "true"
-      );
-      showToast("Faculty status updated.", "success");
-      renderFaculty(container);
+      btn.disabled = true;
+      try {
+        await adminApi.setFacultyActive(
+          btn.dataset.id,
+          btn.dataset.next === "true"
+        );
+        showToast("Faculty status updated.", "success");
+        renderFaculty(container);
+      } catch (err) {
+        showToast(err.message || "Failed to update faculty status.", "error");
+        btn.disabled = false;
+      }
     });
   });
 
@@ -251,10 +536,17 @@ async function renderFaculty(container) {
         <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Password</label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
-        <div class="form-group"><label class="form-label">Department ID</label><input name="department_id" type="number" min="1" value="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "faculty-dept-select",
+          name: "department_id",
+          label: "Department",
+          placeholder: "Search department by code or name...",
+          required: true,
+        })}
         <div class="form-group"><label class="form-label">Employee ID</label><input name="employee_id" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Designation</label><input name="designation" class="form-control" required /></div>
       `,
+      onMount: () => [mountDepartmentSelect("faculty-dept-select")],
       onSubmit: async (form) => {
         await adminApi.createFaculty({
           ...form,
@@ -304,9 +596,15 @@ async function renderDepartments(container) {
   bindPagination(data, () => renderDepartments(container));
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await adminApi.setDepartmentActive(btn.dataset.id, btn.dataset.next === "true");
-      showToast("Department updated.", "success");
-      renderDepartments(container);
+      btn.disabled = true;
+      try {
+        await adminApi.setDepartmentActive(btn.dataset.id, btn.dataset.next === "true");
+        showToast("Department updated.", "success");
+        renderDepartments(container);
+      } catch (err) {
+        showToast(err.message || "Failed to update department.", "error");
+        btn.disabled = false;
+      }
     });
   });
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
@@ -365,9 +663,15 @@ async function renderSemesters(container) {
   bindPagination(data, () => renderSemesters(container));
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await adminApi.setSemesterActive(btn.dataset.id, btn.dataset.next === "true");
-      showToast("Semester updated.", "success");
-      renderSemesters(container);
+      btn.disabled = true;
+      try {
+        await adminApi.setSemesterActive(btn.dataset.id, btn.dataset.next === "true");
+        showToast("Semester updated.", "success");
+        renderSemesters(container);
+      } catch (err) {
+        showToast(err.message || "Failed to update semester.", "error");
+        btn.disabled = false;
+      }
     });
   });
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
@@ -432,11 +736,18 @@ async function renderCourses(container) {
     openFormModal({
       title: "Create Course",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Department ID</label><input name="department_id" type="number" value="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "course-dept-select",
+          name: "department_id",
+          label: "Department",
+          placeholder: "Search department by code or name...",
+          required: true,
+        })}
         <div class="form-group"><label class="form-label">Code</label><input name="code" class="form-control" placeholder="CS101" required /></div>
         <div class="form-group"><label class="form-label">Title</label><input name="title" class="form-control" placeholder="Algorithms" required /></div>
         <div class="form-group"><label class="form-label">Credits</label><input name="credits" type="number" min="1" value="4" class="form-control" required /></div>
       `,
+      onMount: () => [mountDepartmentSelect("course-dept-select")],
       onSubmit: async (form) => {
         await adminApi.createCourse({
           ...form,
@@ -462,8 +773,12 @@ async function renderOfferings(container) {
         columns: [
           { key: "id", label: "ID" },
           { label: "Course", render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`) },
-          { label: "Semester", render: (r) => escapeHtml(r.semester.name) },
-          { label: "Faculty", render: (r) => escapeHtml(r.faculty.user.full_name) },
+          { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
+          {
+            label: "Faculty",
+            render: (r) =>
+              escapeHtml(`${r.faculty.employee_id} — ${r.faculty.user.full_name}`),
+          },
           { key: "section", label: "Sec" },
           {
             label: "Status",
@@ -484,12 +799,35 @@ async function renderOfferings(container) {
     openFormModal({
       title: "Create Course Offering",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Course ID</label><input name="course_id" type="number" value="1" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Semester ID</label><input name="semester_id" type="number" value="1" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Faculty ID</label><input name="faculty_id" type="number" value="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "offering-course-select",
+          name: "course_id",
+          label: "Course",
+          placeholder: "Search course by code or title...",
+          required: true,
+        })}
+        ${renderSearchableSelectField({
+          id: "offering-semester-select",
+          name: "semester_id",
+          label: "Semester",
+          placeholder: "Search semester by name or academic year...",
+          required: true,
+        })}
+        ${renderSearchableSelectField({
+          id: "offering-faculty-select",
+          name: "faculty_id",
+          label: "Faculty",
+          placeholder: "Search faculty by Employee ID, name, or email...",
+          required: true,
+        })}
         <div class="form-group"><label class="form-label">Section</label><input name="section" value="A" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Max Capacity</label><input name="max_capacity" type="number" value="60" class="form-control" /></div>
+        <div class="form-group"><label class="form-label">Max Capacity</label><input name="max_capacity" type="number" min="1" value="60" class="form-control" /></div>
       `,
+      onMount: () => [
+        mountCourseSelect("offering-course-select"),
+        mountSemesterSelect("offering-semester-select"),
+        mountFacultySelect("offering-faculty-select"),
+      ],
       onSubmit: async (form) => {
         await adminApi.createOffering({
           course_id: Number(form.course_id),
@@ -533,9 +871,25 @@ async function renderEnrollments(container) {
     openFormModal({
       title: "Enroll Student",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Student ID</label><input name="student_id" type="number" min="1" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Course Offering ID</label><input name="course_offering_id" type="number" min="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "enroll-student-select",
+          name: "student_id",
+          label: "Student",
+          placeholder: "Search student by name, roll number, or email...",
+          required: true,
+        })}
+        ${renderSearchableSelectField({
+          id: "enroll-offering-select",
+          name: "course_offering_id",
+          label: "Course Offering",
+          placeholder: "Search offering by course code, semester, section, or faculty...",
+          required: true,
+        })}
       `,
+      onMount: () => [
+        mountStudentSelect("enroll-student-select"),
+        mountOfferingSelect("enroll-offering-select"),
+      ],
       onSubmit: async (form) => {
         await opsApi.enrollStudent({
           student_id: Number(form.student_id),
@@ -584,9 +938,15 @@ async function renderNotices(container) {
   bindPagination(data, () => renderNotices(container));
   container.querySelectorAll(".deact-notice-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await opsApi.deactivateNotice(btn.dataset.id);
-      showToast("Notice deactivated.", "success");
-      renderNotices(container);
+      btn.disabled = true;
+      try {
+        await opsApi.deactivateNotice(btn.dataset.id);
+        showToast("Notice deactivated.", "success");
+        renderNotices(container);
+      } catch (err) {
+        showToast(err.message || "Failed to deactivate notice.", "error");
+        btn.disabled = false;
+      }
     });
   });
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
@@ -646,16 +1006,28 @@ async function renderTimetable(container) {
   bindPagination(data, () => renderTimetable(container));
   container.querySelectorAll(".del-slot-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await opsApi.deleteTimetableSlot(btn.dataset.id);
-      showToast("Slot deleted.", "success");
-      renderTimetable(container);
+      btn.disabled = true;
+      try {
+        await opsApi.deleteTimetableSlot(btn.dataset.id);
+        showToast("Slot deleted.", "success");
+        renderTimetable(container);
+      } catch (err) {
+        showToast(err.message || "Failed to delete slot.", "error");
+        btn.disabled = false;
+      }
     });
   });
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Timetable Slot",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Course Offering ID</label><input name="course_offering_id" type="number" min="1" class="form-control" required /></div>
+        ${renderSearchableSelectField({
+          id: "timetable-offering-select",
+          name: "course_offering_id",
+          label: "Course Offering",
+          placeholder: "Search offering by course code, semester, section, or faculty...",
+          required: true,
+        })}
         <div class="form-group"><label class="form-label">Day</label>
           <select name="day_of_week" class="form-control">
             <option value="monday">Monday</option><option value="tuesday">Tuesday</option>
@@ -667,6 +1039,7 @@ async function renderTimetable(container) {
         <div class="form-group"><label class="form-label">End Time</label><input name="end_time" type="time" value="10:00" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Room</label><input name="room" class="form-control" placeholder="Room 101" /></div>
       `,
+      onMount: () => [mountOfferingSelect("timetable-offering-select")],
       onSubmit: async (form) => {
         await opsApi.createTimetableSlot({
           ...form,
@@ -742,6 +1115,7 @@ async function renderOfferingLookupSection(container, { title, mode }) {
 export async function renderAdminPage(container, routeId) {
   state.page = 1;
   state.search = "";
+  state.showArchived = false;
   container.innerHTML = renderLoading("Loading module...");
   try {
     switch (routeId) {

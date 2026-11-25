@@ -40,6 +40,7 @@ def create_course_offering_endpoint(
 @router.get("", response_model=PaginatedResponse[CourseOfferingResponse])
 def list_course_offerings_endpoint(
     db: Annotated[Session, Depends(get_db)],
+    search: str | None = Query(default=None, max_length=100),
     semester_id: int | None = Query(default=None, gt=0),
     faculty_id: int | None = Query(default=None, gt=0),
     course_id: int | None = Query(default=None, gt=0),
@@ -48,9 +49,10 @@ def list_course_offerings_endpoint(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedResponse[CourseOfferingResponse]:
-    """List course offerings with filtering and pagination."""
+    """List course offerings with search, filtering, and pagination."""
     items, total = course_offering_service.list_course_offerings(
         db,
+        search=search,
         semester_id=semester_id,
         faculty_id=faculty_id,
         course_id=course_id,

@@ -193,16 +193,25 @@ def get_semester_by_id(db: Session, semester_id: int) -> Semester:
 def list_semesters(
     db: Session,
     *,
+    search: str | None = None,
     academic_year: str | None = None,
     is_active: bool | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[Semester], int]:
-    """List semesters with optional academic year/active filter and pagination."""
+    """List semesters with optional search, filters, and pagination."""
     stmt = select(Semester)
     count_stmt = select(func.count(Semester.id))
 
     filters = []
+    if search:
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                Semester.name.ilike(pattern),
+                Semester.academic_year.ilike(pattern),
+            )
+        )
     if academic_year:
         filters.append(Semester.academic_year == academic_year.strip())
     if is_active is not None:

@@ -158,24 +158,28 @@ async function renderFacultyStudents(container) {
 
   async function load() {
     tableEl.innerHTML = renderLoading();
-    const data = await opsApi.listOfferingEnrollments(select.value, { page: 1, page_size: 100 });
-    tableEl.innerHTML = renderDataTable({
-      columns: [
-        { label: "Roll No", render: (r) => escapeHtml(r.student.roll_number) },
-        { label: "Name", render: (r) => escapeHtml(r.student.user.full_name) },
-        { label: "Email", render: (r) => escapeHtml(r.student.user.email) },
-        {
-          label: "Status",
-          render: (r) =>
-            renderStatusBadge(
-              r.status,
-              r.status === "enrolled" ? "success" : "warning"
-            ),
-        },
-      ],
-      rows: data.items,
-      emptyTitle: "No students enrolled",
-    });
+    try {
+      const data = await opsApi.listOfferingEnrollments(select.value, { page: 1, page_size: 100 });
+      tableEl.innerHTML = renderDataTable({
+        columns: [
+          { label: "Roll No", render: (r) => escapeHtml(r.student.roll_number) },
+          { label: "Name", render: (r) => escapeHtml(r.student.user.full_name) },
+          { label: "Email", render: (r) => escapeHtml(r.student.user.email) },
+          {
+            label: "Status",
+            render: (r) =>
+              renderStatusBadge(
+                r.status,
+                r.status === "enrolled" ? "success" : "warning"
+              ),
+          },
+        ],
+        rows: data.items,
+        emptyTitle: "No students enrolled",
+      });
+    } catch (err) {
+      tableEl.innerHTML = renderErrorState(err.message || "Failed to load enrolled students.");
+    }
   }
 
   select.addEventListener("change", load);
@@ -235,10 +239,19 @@ async function renderFacultyAttendance(container) {
     listEl.querySelectorAll(".mark-att-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const sessionId = btn.dataset.id;
-        const enrolled = await opsApi.listOfferingEnrollments(select.value, {
-          page: 1,
-          page_size: 100,
-        });
+        btn.disabled = true;
+        let enrolled;
+        try {
+          enrolled = await opsApi.listOfferingEnrollments(select.value, {
+            page: 1,
+            page_size: 100,
+          });
+        } catch (err) {
+          showToast(err.message || "Failed to load enrolled students.", "error");
+          btn.disabled = false;
+          return;
+        }
+        btn.disabled = false;
         const activeStudents = enrolled.items.filter((e) => e.status === "enrolled");
         if (!activeStudents.length) {
           showToast("No actively enrolled students in this offering.", "error");
@@ -263,18 +276,27 @@ async function renderFacultyAttendance(container) {
           title: `Mark Attendance (Session #${sessionId})`,
           bodyHtml: `<form id="bulk-att-form">${rowsHtml}<button class="btn btn-primary btn-block" type="submit" style="margin-top:1rem;">Save Attendance</button></form>`,
         });
-        document.getElementById("bulk-att-form")?.addEventListener("submit", async (ev) => {
+        const attForm = document.getElementById("bulk-att-form");
+        attForm?.addEventListener("submit", async (ev) => {
           ev.preventDefault();
-          const records = Array.from(document.querySelectorAll(".att-status-sel")).map(
-            (sel) => ({
-              student_id: Number(sel.dataset.studentId),
-              status: sel.value,
-            })
-          );
-          await opsApi.markAttendanceRecords(sessionId, records);
-          closeModal();
-          showToast("Attendance saved.", "success");
-          load();
+          const submitBtn = attForm.querySelector('button[type="submit"]');
+          if (submitBtn) submitBtn.disabled = true;
+          try {
+            const records = Array.from(document.querySelectorAll(".att-status-sel")).map(
+              (sel) => ({
+                student_id: Number(sel.dataset.studentId),
+                status: sel.value,
+              })
+            );
+            await opsApi.markAttendanceRecords(sessionId, records);
+            closeModal();
+            showToast("Attendance saved.", "success");
+            load();
+          } catch (err) {
+            showToast(err.message || "Failed to save attendance.", "error");
+          } finally {
+            if (submitBtn) submitBtn.disabled = false;
+          }
         });
       });
     });

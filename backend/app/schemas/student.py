@@ -47,7 +47,17 @@ class StudentDetailResponse(BaseModel):
     current_semester_number: int
     phone: str | None
     date_of_birth: date | None
+    is_archived: bool
+    archived_at: datetime | None
+    archived_by_user_id: int | None
     created_at: datetime
     updated_at: datetime
     user: UserResponse
     department: DepartmentSummary
+
+
+class StudentArchiveResponse(BaseModel):
+    """Response returned after archiving a student."""
+
+    message: str
+    student: StudentDetailResponse

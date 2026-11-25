@@ -40,14 +40,16 @@ def create_semester_endpoint(
 @router.get("", response_model=PaginatedResponse[SemesterResponse])
 def list_semesters_endpoint(
     db: Annotated[Session, Depends(get_db)],
+    search: str | None = Query(default=None, max_length=100),
     academic_year: str | None = Query(default=None, max_length=20),
     is_active: bool | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedResponse[SemesterResponse]:
-    """List semesters with optional academic year/active filter and pagination."""
+    """List semesters with optional search, filters, and pagination."""
     items, total = academic_service.list_semesters(
         db,
+        search=search,
         academic_year=academic_year,
         is_active=is_active,
         page=page,

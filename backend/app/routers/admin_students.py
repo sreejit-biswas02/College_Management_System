@@ -7,11 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.dependencies.permissions import require_roles
-from app.models.user import UserRole
+from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
 from app.schemas.student import (
     AdminStudentCreate,
     AdminStudentUpdate,
+    StudentArchiveResponse,
     StudentDetailResponse,
 )
 from app.services import student_service
@@ -44,6 +45,7 @@ def list_students_endpoint(
     department_id: int | None = Query(default=None, gt=0),
     semester_number: int | None = Query(default=None, ge=1, le=16),
     is_active: bool | None = None,
+    is_archived: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedResponse[StudentDetailResponse]:
@@ -54,6 +56,7 @@ def list_students_endpoint(
         department_id=department_id,
         semester_number=semester_number,
         is_active=is_active,
+        is_archived=is_archived,
         page=page,
         page_size=page_size,
     )
@@ -103,4 +106,28 @@ def deactivate_student_endpoint(
 ) -> StudentDetailResponse:
     """Deactivate a student account."""
     student = student_service.set_student_active_status(db, student_id, False)
+    return StudentDetailResponse.model_validate(student)
+
+
+@router.delete("/{student_id}", response_model=StudentArchiveResponse)
+def archive_student_endpoint(
+    student_id: int,
+    current_admin: Annotated[User, Depends(require_roles(UserRole.ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+) -> StudentArchiveResponse:
+    """Archive (soft-delete) a student account while retaining academic records."""
+    student = student_service.archive_student(db, student_id, current_admin.id)
+    return StudentArchiveResponse(
+        message="Student archived successfully. Academic records have been retained.",
+        student=StudentDetailResponse.model_validate(student),
+    )
+
+
+@router.post("/{student_id}/restore", response_model=StudentDetailResponse)
+def restore_student_endpoint(
+    student_id: int,
+    db: Annotated[Session, Depends(get_db)],
+) -> StudentDetailResponse:
+    """Restore an archived student profile (account remains inactive)."""
+    student = student_service.restore_student(db, student_id)
     return StudentDetailResponse.model_validate(student)

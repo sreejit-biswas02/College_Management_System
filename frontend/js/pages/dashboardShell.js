@@ -3,7 +3,7 @@ import { renderNavbar } from "../components/navbar.js";
 import { renderSidebar } from "../components/sidebar.js";
 import { showToast } from "../components/toast.js";
 import { ROLE_NAVIGATION, ROLES } from "../config.js";
-import { renderAdminPage } from "./adminPages.js";
+import { renderAdminPage } from "./adminPages.js?v=2";
 import { renderFacultyPage } from "./facultyPages.js";
 import { renderStudentPage } from "./studentPages.js";
 

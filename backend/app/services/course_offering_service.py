@@ -1,13 +1,18 @@
 """Business logic for Course Offering management."""
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.academic import Course, Semester
 from app.models.course_offering import CourseOffering
-from app.models.user import Faculty
+from app.models.user import Faculty, User
 from app.schemas.course_offering import CourseOfferingCreate, CourseOfferingUpdate
-from app.services.exceptions import ConflictError, NotFoundError, commit_or_conflict
+from app.services.exceptions import (
+    BusinessRuleError,
+    ConflictError,
+    NotFoundError,
+    commit_or_conflict,
+)
 
 
 def _offering_query():
@@ -18,19 +23,44 @@ def _offering_query():
     )
 
 
+def _resolve_faculty_id(
+    db: Session,
+    *,
+    faculty_id: int | None = None,
+    faculty_employee_id: str | None = None,
+) -> int:
+    """Resolve faculty_id or faculty_employee_id to an active Faculty primary key."""
+    stmt = select(Faculty).options(joinedload(Faculty.user))
+    if faculty_employee_id is not None:
+        faculty = db.scalar(
+            stmt.where(Faculty.employee_id == faculty_employee_id.strip())
+        )
+    elif faculty_id is not None:
+        faculty = db.scalar(stmt.where(Faculty.id == faculty_id))
+    else:
+        raise BusinessRuleError(
+            "Either faculty_id or faculty_employee_id must be provided."
+        )
+
+    if faculty is None:
+        raise NotFoundError("Faculty member not found.")
+    if not faculty.user.is_active:
+        raise BusinessRuleError(
+            "Inactive faculty member cannot be assigned to a course offering."
+        )
+    return faculty.id
+
+
 def _validate_offering_refs(
     db: Session,
     *,
     course_id: int,
     semester_id: int,
-    faculty_id: int,
 ) -> None:
     if db.get(Course, course_id) is None:
         raise NotFoundError("Course not found.")
     if db.get(Semester, semester_id) is None:
         raise NotFoundError("Semester not found.")
-    if db.get(Faculty, faculty_id) is None:
-        raise NotFoundError("Faculty member not found.")
 
 
 def create_course_offering(
@@ -42,7 +72,11 @@ def create_course_offering(
         db,
         course_id=payload.course_id,
         semester_id=payload.semester_id,
+    )
+    faculty_id = _resolve_faculty_id(
+        db,
         faculty_id=payload.faculty_id,
+        faculty_employee_id=payload.faculty_employee_id,
     )
     section = payload.section.strip().upper()
     existing = db.scalar(
@@ -60,7 +94,7 @@ def create_course_offering(
     offering = CourseOffering(
         course_id=payload.course_id,
         semester_id=payload.semester_id,
-        faculty_id=payload.faculty_id,
+        faculty_id=faculty_id,
         section=section,
         max_capacity=payload.max_capacity,
         is_active=payload.is_active,
@@ -84,6 +118,7 @@ def get_course_offering_by_id(db: Session, offering_id: int) -> CourseOffering:
 def list_course_offerings(
     db: Session,
     *,
+    search: str | None = None,
     semester_id: int | None = None,
     faculty_id: int | None = None,
     course_id: int | None = None,
@@ -92,11 +127,36 @@ def list_course_offerings(
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[CourseOffering], int]:
-    """List course offerings with filtering and pagination."""
+    """List course offerings with search, filtering, and pagination."""
     stmt = _offering_query()
     count_stmt = select(func.count(CourseOffering.id))
 
     filters = []
+    if search:
+        pattern = f"%{search.strip()}%"
+        stmt = (
+            stmt.join(CourseOffering.course)
+            .join(CourseOffering.semester)
+            .join(CourseOffering.faculty)
+            .join(Faculty.user)
+        )
+        count_stmt = (
+            count_stmt.join(CourseOffering.course)
+            .join(CourseOffering.semester)
+            .join(CourseOffering.faculty)
+            .join(Faculty.user)
+        )
+        filters.append(
+            or_(
+                Course.code.ilike(pattern),
+                Course.title.ilike(pattern),
+                Semester.name.ilike(pattern),
+                Semester.academic_year.ilike(pattern),
+                CourseOffering.section.ilike(pattern),
+                Faculty.employee_id.ilike(pattern),
+                User.full_name.ilike(pattern),
+            )
+        )
     if semester_id is not None:
         filters.append(CourseOffering.semester_id == semester_id)
     if faculty_id is not None:
@@ -137,21 +197,24 @@ def update_course_offering(
     new_semester_id = (
         payload.semester_id if payload.semester_id is not None else offering.semester_id
     )
-    new_faculty_id = (
-        payload.faculty_id if payload.faculty_id is not None else offering.faculty_id
-    )
     new_section = (
         payload.section.strip().upper()
         if payload.section is not None
         else offering.section
     )
-
     _validate_offering_refs(
         db,
         course_id=new_course_id,
         semester_id=new_semester_id,
-        faculty_id=new_faculty_id,
     )
+    if payload.faculty_id is not None or payload.faculty_employee_id is not None:
+        new_faculty_id = _resolve_faculty_id(
+            db,
+            faculty_id=payload.faculty_id,
+            faculty_employee_id=payload.faculty_employee_id,
+        )
+    else:
+        new_faculty_id = offering.faculty_id
 
     if (new_course_id, new_semester_id, new_section) != (
         offering.course_id,

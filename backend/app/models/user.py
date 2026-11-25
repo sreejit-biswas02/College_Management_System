@@ -6,7 +6,17 @@ import enum
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -60,6 +70,7 @@ class User(Base):
 
     student_profile: Mapped[Student | None] = relationship(
         back_populates="user",
+        foreign_keys="Student.user_id",
         cascade="all, delete-orphan",
         uselist=False,
     )
@@ -104,6 +115,25 @@ class Student(Base):
     )
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+        index=True,
+        nullable=False,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    archived_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            name="fk_students_archived_by_user_id_users",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -116,7 +146,13 @@ class Student(Base):
         nullable=False,
     )
 
-    user: Mapped[User] = relationship(back_populates="student_profile")
+    user: Mapped[User] = relationship(
+        back_populates="student_profile",
+        foreign_keys=[user_id],
+    )
+    archived_by_user: Mapped[User | None] = relationship(
+        foreign_keys=[archived_by_user_id],
+    )
     department: Mapped[Department] = relationship(back_populates="students")
     enrollments: Mapped[list[Enrollment]] = relationship(
         back_populates="student",

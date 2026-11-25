@@ -72,6 +72,9 @@ Student-specific profile linked 1-to-1 to `users`.
   - `current_semester_number`: `INTEGER`, `NOT NULL`, default `1`
   - `phone`: `VARCHAR(20)`, `NULL`
   - `date_of_birth`: `DATE`, `NULL`
+  - `is_archived`: `BOOLEAN`, `NOT NULL`, default `false`, indexed (soft-delete flag; preserves academic history)
+  - `archived_at`: `TIMESTAMPTZ`, `NULL`
+  - `archived_by_user_id`: `INTEGER`, `FK -> users.id` (`ON DELETE SET NULL`), `NULL`
   - `created_at`, `updated_at`: `TIMESTAMPTZ`, `NOT NULL`
 
 #### `faculty`

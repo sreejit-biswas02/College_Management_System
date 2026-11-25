@@ -23,6 +23,10 @@ export const setStudentActive = (id, active) =>
   apiRequest(`/admin/students/${id}/${active ? "activate" : "deactivate"}`, {
     method: "PATCH",
   });
+export const archiveStudent = (id) =>
+  apiRequest(`/admin/students/${id}`, { method: "DELETE" });
+export const restoreStudent = (id) =>
+  apiRequest(`/admin/students/${id}/restore`, { method: "POST" });
 
 // Faculty
 export const listFaculty = (params) =>
