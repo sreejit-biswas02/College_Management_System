@@ -130,7 +130,6 @@ The project is designed for cloud deployment:
 
 ## Important Notes
 
-- Never commit `.env` files or expose database credentials.
 - Configure your own database and environment variables before running the application.
 - Cloudflare R2 credentials are required for live file storage functionality.
 - Database migrations must be applied before using the application.
