@@ -1,139 +1,436 @@
 # College Management System
 
-A scalable, role-based College Management System built using **FastAPI, PostgreSQL, HTML, CSS, and Vanilla JavaScript**.
+A role-based College Management System built with **FastAPI, PostgreSQL,
+SQLAlchemy, Alembic, HTML, CSS, and Vanilla JavaScript**.
 
-The system provides separate dashboards and functionality for administrators, faculty members, and students.
+The application provides separate workflows for administrators, faculty
+members, and students, including academic administration, course
+enrollment, attendance, assignments, submissions, notices, and timetable
+management.
 
-## Features
+This guide is written for a judge or evaluator setting up the project on
+a fresh computer. Follow the steps in order.
 
-- Role-based authentication and authorization
-- Student and faculty management
-- Department, semester, and course management
-- Course offerings and student enrollment
-- Attendance management
-- Assignments and submissions
-- Submission evaluation and grading
-- Notice management
-- Timetable management
-- Secure file uploads and downloads
-- Automatic semester calculation and promotion
+------------------------------------------------------------------------
 
-## Technology Stack
+## 1. Features
 
-| Component | Technology |
-|---|---|
-| Frontend | HTML, CSS, JavaScript |
-| Backend | Python, FastAPI |
-| Database | PostgreSQL |
-| ORM | SQLAlchemy |
-| Migrations | Alembic |
-| Authentication | JWT, Argon2 |
-| Package Manager | uv |
-| File Storage | Cloudflare R2 |
+-   Role-based authentication and authorization
+-   Student and faculty management
+-   Department, semester, and course management
+-   Course offerings and student enrollment
+-   Attendance management
+-   Assignment creation and submissions
+-   Submission evaluation and grading
+-   Notice management
+-   Timetable management
+-   Database migrations with Alembic
+-   File-storage integration (Cloudflare R2 / S3-compatible storage,
+    when configured)
 
-## Project Structure
+------------------------------------------------------------------------
 
-```text
-College_Management_System/
-├── backend/
-│   ├── app/
-│   ├── alembic/
-│   ├── tests/
-│   ├── pyproject.toml
-│   └── .env.example
-├── frontend/
-│   ├── index.html
-│   ├── css/
-│   └── js/
-├── docs/
-└── render.yaml
+## 2. Technology stack
+
+  Layer                                 Technology
+  ------------------------------------- -------------------------------
+  Backend                               Python, FastAPI
+  Database                              PostgreSQL
+  ORM                                   SQLAlchemy
+  Database migrations                   Alembic
+  Frontend                              HTML, CSS, Vanilla JavaScript
+  Python environment and dependencies   `uv`
+  Authentication                        JWT
+  Password hashing                      Argon2
+
+------------------------------------------------------------------------
+
+## 3. Prerequisites
+
+Install the following before starting:
+
+1.  **Git** -- to clone the repository.
+2.  **Python 3.12 or later** -- the project requires Python 3.12+.
+3.  **uv** -- Python package and environment manager.
+4.  **PostgreSQL** -- a local PostgreSQL server and database.
+5.  A modern browser such as Chrome, Firefox, or Edge.
+
+### Install uv
+
+Follow the official installation instructions:
+<https://docs.astral.sh/uv/getting-started/installation/>.
+
+On Linux/macOS, the standard installer is:
+
+``` bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## Setup Instructions
+On Windows, use the installation instructions on the official uv
+website.
 
-### 1. Clone the repository
+Check the installations:
 
-```bash
+``` bash
+git --version
+python3 --version
+uv --version
+```
+
+Make sure Python is version 3.12 or later.
+
+------------------------------------------------------------------------
+
+## 4. Clone the repository
+
+Open a terminal and run:
+
+``` bash
 git clone https://github.com/sreejit-biswas02/College_Management_System.git
 cd College_Management_System
 ```
 
-### 2. Install prerequisites
+The repository is organized approximately as follows:
 
-Install:
-- Python 3.12
-- uv
-- PostgreSQL (only if using a local database)
-
-### 3. Configure PostgreSQL
-
-You can use either a local PostgreSQL database or a hosted PostgreSQL database such as Neon.
-
-Create a database and database user if using PostgreSQL locally.
-
-### 4. Configure the backend
-
-```bash
-cd backend
-uv sync
-cp .env.example .env
+``` text
+College_Management_System/
+├── backend/
+│   ├── app/
+│   ├── tests/
+│   ├── alembic/
+│   ├── pyproject.toml
+│   └── alembic.ini
+├── frontend/
+│   ├── index.html
+│   ├── css/
+│   ├── js/
+│   └── build.sh
+├── docs/
+├── .gitignore
+└── README.md
 ```
 
-Edit `.env` and configure your database connection, secret key, and other required environment variables.
+Some files or folders may change as the project evolves. The `backend`
+directory contains the API and database code; `frontend` contains the
+browser application.
 
-### 5. Run database migrations
+------------------------------------------------------------------------
 
-```bash
+## 5. Create a PostgreSQL database
+
+Start your local PostgreSQL service, then create a database for the
+project.
+
+For example, using `psql`:
+
+``` sql
+CREATE DATABASE college_management;
+```
+
+You may use a different database name, but use the same name in the
+connection string below.
+
+A PostgreSQL connection URL has this general format:
+
+``` text
+postgresql+psycopg://USERNAME:PASSWORD@HOST:5432/DATABASE_NAME
+```
+
+For a local database, `HOST` is usually `localhost`.
+
+If your password contains special URL characters (for example `@`, `:`,
+`/`, or `#`), URL-encode those characters before putting the password in
+the connection URL.
+
+------------------------------------------------------------------------
+
+## 6. Configure backend environment variables
+
+Move into the backend directory:
+
+``` bash
+cd backend
+```
+
+Create a `.env` file in `backend/`. Do not commit this file or share its
+secrets.
+
+Example:
+
+``` env
+APP_NAME="College Management System"
+ENVIRONMENT=development
+DEBUG=true
+LOG_LEVEL=INFO
+
+DATABASE_URL=postgresql+psycopg://USERNAME:PASSWORD@localhost:5432/college_management
+
+SECRET_KEY=REPLACE_WITH_A_LONG_RANDOM_SECRET
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+FRONTEND_URL=http://127.0.0.1:5500
+
+STORAGE_PROVIDER=r2
+```
+
+Replace `USERNAME`, `PASSWORD`, and the database name with your local
+PostgreSQL details.
+
+Generate a strong secret key instead of using the example text:
+
+``` bash
+openssl rand -hex 32
+```
+
+Copy the generated value into `SECRET_KEY`.
+
+### Optional file-storage configuration
+
+If you need to test features that upload or retrieve files, configure
+the Cloudflare R2 credentials supplied for the project:
+
+``` env
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=
+R2_ENDPOINT_URL=
+R2_PUBLIC_BASE_URL=
+```
+
+Do not invent credentials. If R2 credentials are not available, ask the
+project maintainer which file-storage features are expected to be
+demonstrated locally.
+
+`DIRECT_DATABASE_URL` is optional for a normal local PostgreSQL setup.
+If you set it, it can use the same local database URL as `DATABASE_URL`.
+
+------------------------------------------------------------------------
+
+## 7. Install backend dependencies
+
+Make sure your terminal is inside `backend/`, then run:
+
+``` bash
+uv sync
+```
+
+This creates the project environment and installs the dependencies
+declared by the backend project.
+
+------------------------------------------------------------------------
+
+## 8. Apply database migrations
+
+Still inside `backend/`, run:
+
+``` bash
 uv run alembic upgrade head
 ```
 
-### 6. Create the administrator account
+This applies the database migrations and creates or updates the tables
+required by the application.
 
-```bash
-uv run python -m app.cli.create_admin \
-  --email admin@example.com \
-  --full-name "System Admin"
+If the command reports a database connection error, check:
+
+-   PostgreSQL is running.
+-   The database exists.
+-   The username and password in `DATABASE_URL` are correct.
+-   The database name and port are correct.
+
+Do not manually create application tables if migrations are available.
+
+------------------------------------------------------------------------
+
+## 9. Start the FastAPI backend
+
+From the `backend/` directory, run:
+
+``` bash
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Set the administrator password securely when prompted.
+Keep this terminal open while using the application.
 
-### 7. Start the backend
+Useful backend URLs:
 
-```bash
-uv run uvicorn app.main:app --reload
-```
+  Purpose                            URL
+  ---------------------------------- -----------------------------------------
+  API base                           `http://127.0.0.1:8000`
+  Health check                       `http://127.0.0.1:8000/health`
+  Database health check              `http://127.0.0.1:8000/health/database`
+  API documentation (when enabled)   `http://127.0.0.1:8000/docs`
 
-Backend: http://127.0.0.1:8000
+A successful health check should return a successful HTTP response. The
+API documentation may be disabled by application configuration.
 
-API documentation: http://127.0.0.1:8000/docs
+------------------------------------------------------------------------
 
-### 8. Start the frontend
+## 10. Start the frontend
 
-Open another terminal:
+Open a **second terminal**. From the repository root, run:
 
-```bash
+``` bash
 cd frontend
-python3 -m http.server 5500
+python3 -m http.server 5500 --bind 127.0.0.1
 ```
 
-Open: http://127.0.0.1:5500
+Then open:
 
-## Deployment Architecture
+<http://127.0.0.1:5500>
 
-The project is designed for cloud deployment:
+Keep both the backend and frontend terminals running.
 
-- Frontend: Cloudflare Pages
-- Backend: Render
-- Database: Neon PostgreSQL
-- File Storage: Cloudflare R2
-- Source Control: GitHub
+The frontend's local runtime configuration should point API requests to:
 
-## Important Notes
+``` text
+http://127.0.0.1:8000/api/v1
+```
 
-- Configure your own database and environment variables before running the application.
-- Cloudflare R2 credentials are required for live file storage functionality.
-- Database migrations must be applied before using the application.
+If the browser cannot connect to the API, verify that the backend is
+running and that the frontend runtime configuration uses the local API
+URL.
 
----
+------------------------------------------------------------------------
 
-**College Management System** — A modern platform for managing academic and administrative operations.
+## 11. Administrator account and login
+
+The application uses role-based authentication. An administrator account
+must exist before an evaluator can access administrator-only workflows.
+
+Use the project's administrator bootstrap procedure or ask the project
+maintainer for the approved initial administrator setup instructions.
+
+Do not assume that a default username or password exists. Do not put
+administrator credentials in this README, source control, or public
+project screenshots.
+
+If an administrator account already exists and you have authorization to
+change its password, use the project's password-reset utility and follow
+its help output. Keep the new password private.
+
+------------------------------------------------------------------------
+
+## 12. Run tests
+
+From the `backend/` directory:
+
+``` bash
+uv run pytest
+```
+
+If you want to run lint checks and Ruff is installed in the project
+environment:
+
+``` bash
+uv run ruff check .
+```
+
+To check formatting:
+
+``` bash
+uv run ruff format --check .
+```
+
+If a test command is unavailable, first check the development
+dependencies in `backend/pyproject.toml`.
+
+------------------------------------------------------------------------
+
+## 13. Troubleshooting
+
+### `uv: command not found`
+
+Install uv using the instructions in [Prerequisites](#3-prerequisites),
+then restart the terminal so its updated PATH is loaded.
+
+### PostgreSQL connection refused
+
+Make sure the PostgreSQL service is running and that `DATABASE_URL`
+points to the correct host, port, database, username, and password.
+
+### Database does not exist
+
+Create the database in PostgreSQL, then run the migration command again.
+
+### Missing environment variable or settings validation error
+
+Check that `backend/.env` exists, is in the backend directory, and
+contains the required settings. Do not paste secret values into issue
+reports.
+
+### Frontend loads but API requests fail
+
+1.  Confirm the backend is running at `http://127.0.0.1:8000`.
+2.  Open `http://127.0.0.1:8000/health`.
+3.  Confirm the frontend uses `http://127.0.0.1:8000/api/v1` as its API
+    base URL.
+4.  Check the browser developer console and backend terminal for errors.
+
+### Login does not work
+
+Confirm that migrations have been applied and that an administrator
+account has been created using the approved bootstrap process. There is
+no assumed default password.
+
+### File upload or download fails
+
+Check that the R2 environment variables are configured correctly and
+that the bucket and credentials are valid. File-storage functionality
+may require external R2 access even when the rest of the application
+runs locally.
+
+------------------------------------------------------------------------
+
+## 14. Recommended evaluation order
+
+For a smooth demonstration, use this order:
+
+1.  Start PostgreSQL.
+2.  Start the FastAPI backend.
+3.  Start the frontend server.
+4.  Open the frontend in the browser.
+5.  Sign in using the administrator credentials provided by the project
+    maintainer.
+6.  Demonstrate department, semester, course, student, and faculty
+    management.
+7.  Demonstrate course offerings and enrollment.
+8.  Demonstrate attendance, assignments, submissions, and grading.
+9.  Demonstrate notices and timetable management.
+10. Sign in with faculty and student accounts, if those test accounts
+    have been prepared, to demonstrate role-based access.
+
+Prepare authorized demonstration accounts and sample data before the
+judging session. Do not rely on a public default password.
+
+------------------------------------------------------------------------
+
+## 15. Security notes
+
+-   Never commit `.env` files, database passwords, JWT secrets, or R2
+    credentials.
+-   Use a unique, randomly generated `SECRET_KEY`.
+-   Do not use production credentials for a public demonstration.
+-   Use only test data or data you are authorized to show.
+-   Keep administrator credentials private.
+-   Do not disable authentication or authorization to make the
+    demonstration easier.
+
+------------------------------------------------------------------------
+
+## 16. Support and project information
+
+**Project:** College Management System\
+**Backend:** FastAPI\
+**Database:** PostgreSQL\
+**Frontend:** HTML, CSS, Vanilla JavaScript\
+**Repository:**
+<https://github.com/sreejit-biswas02/College_Management_System>
+
+For setup issues, provide the error message and the command that
+produced it, but remove passwords, tokens, connection strings, and other
+secrets before sharing logs.
+
+------------------------------------------------------------------------
+
+**Thank you for evaluating the College Management System.**
