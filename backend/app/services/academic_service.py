@@ -166,7 +166,7 @@ def create_semester(db: Session, payload: SemesterCreate) -> Semester:
         )
 
     semester = Semester(
-        name=payload.name.strip(),
+        name=(payload.name or f"Semester {payload.term_number}").strip(),
         academic_year=academic_year,
         term_number=payload.term_number,
         start_date=payload.start_date,
@@ -270,6 +270,11 @@ def update_semester(
 
     if payload.name is not None:
         semester.name = payload.name.strip()
+    elif (
+        payload.term_number is not None
+        and semester.name == f"Semester {semester.term_number}"
+    ):
+        semester.name = f"Semester {new_term}"
     semester.academic_year = new_year
     semester.term_number = new_term
     semester.start_date = new_start

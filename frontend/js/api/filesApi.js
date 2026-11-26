@@ -59,7 +59,8 @@ export const uploadSubmissionFile = (submissionId, formData, onProgress) =>
 export const listSubmissionFiles = (submissionId) =>
   apiRequest(`/submissions/${submissionId}/files`);
 
-export const getFileDownload = (fileId) => apiRequest(`/files/${fileId}`);
+export const getFileDownload = (fileId, { inline = false } = {}) =>
+  apiRequest(`/files/${fileId}${inline ? "?inline=true" : ""}`);
 
 export const deleteFile = (fileId) =>
   apiRequest(`/files/${fileId}`, { method: "DELETE" });

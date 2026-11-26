@@ -111,13 +111,15 @@ def get_file_download_endpoint(
     current_user: Annotated[User, Depends(require_active_user)],
     db: Annotated[Session, Depends(get_db)],
     storage: Annotated[StorageBackend, Depends(get_storage_backend)],
+    inline: bool = False,
 ) -> FileDownloadResponse:
-    """Return file metadata and a short-lived signed download URL."""
+    """Return file metadata and a short-lived signed download/view URL."""
     record, url, expires = file_service.get_authorized_file_download(
         db,
         file_id=file_id,
         actor=current_user,
         storage=storage,
+        inline=inline,
     )
     return FileDownloadResponse(
         file=StoredFileResponse.model_validate(record),

@@ -1,4 +1,4 @@
-import * as adminApi from "../api/adminApi.js?v=2";
+import * as adminApi from "../api/adminApi.js?v=3";
 import * as opsApi from "../api/operationsApi.js";
 import { renderDataTable } from "../components/dataTable.js";
 import { closeModal, openModal } from "../components/modal.js";
@@ -10,6 +10,7 @@ import {
 import { showToast } from "../components/toast.js";
 import {
   escapeHtml,
+  formatIndianDate,
   renderErrorState,
   renderLoading,
   renderSearchInput,
@@ -38,12 +39,17 @@ function bindPagination(data, reload) {
 }
 
 function openFormModal({ title, fieldsHtml, onMount, onSubmit }) {
+  let selectors = [];
   openModal({
     title,
     bodyHtml: `<form id="modal-entity-form">${fieldsHtml}<button class="btn btn-primary btn-block" type="submit">Save</button></form>`,
+    onClose: () => {
+      selectors.forEach((sel) => sel?.ctrl?.destroy?.());
+      selectors = [];
+    },
   });
   const formEl = document.getElementById("modal-entity-form");
-  const selectors = onMount ? onMount(formEl) || [] : [];
+  selectors = onMount ? onMount(formEl) || [] : [];
 
   formEl?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -67,7 +73,6 @@ function openFormModal({ title, fieldsHtml, onMount, onSubmit }) {
     try {
       const formData = new FormData(formEl);
       await onSubmit(Object.fromEntries(formData.entries()));
-      selectors.forEach((sel) => sel?.ctrl?.destroy?.());
       closeModal();
     } catch (err) {
       showToast(err.message || "Operation failed.", "error");
@@ -133,11 +138,18 @@ function mountSemesterSelect(id = "semester-select") {
       loadErrorMessage: "Failed to load semesters.",
       fetchOptions: ({ search, page, pageSize }) =>
         adminApi.listSemesters({ search, page, page_size: pageSize }),
-      mapOption: (s) => ({
-        value: String(s.id),
-        label: `${s.name} (${s.academic_year})`,
-        description: `Term ${s.term_number} • ${s.is_active ? "Active" : "Inactive"}`,
-      }),
+      mapOption: (s) => {
+        const semType = s.semester_type || (s.term_number % 2 === 1 ? "Odd" : "Even");
+        const dateRange =
+          s.start_date && s.end_date
+            ? ` • ${formatIndianDate(s.start_date)} – ${formatIndianDate(s.end_date)}`
+            : "";
+        return {
+          value: String(s.id),
+          label: `${s.name} (${semType}) — ${s.academic_year}`,
+          description: `Semester ${s.term_number}${dateRange} • ${s.is_active ? "Active" : "Inactive"}`,
+        };
+      },
     }),
   };
 }
@@ -256,6 +268,47 @@ async function renderAdminOverview(container) {
   `;
 }
 
+function formatStudentSemesterBadge(r) {
+  if (r.is_completed) {
+    return renderStatusBadge("Completed (Sem 8)", "info");
+  }
+  if (r.calculated_semester) {
+    return `Semester ${escapeHtml(r.calculated_semester)}`;
+  }
+  if (r.semester_status) {
+    return renderStatusBadge(r.semester_status, "warning");
+  }
+  return `Semester ${escapeHtml(r.current_semester_number)}`;
+}
+
+function buildAdmissionAcademicYearOptions(selectedYear = 2026) {
+  const years = [];
+  for (let yr = 2020; yr <= 2030; yr += 1) {
+    years.push(
+      `<option value="${yr}" ${Number(selectedYear) === yr ? "selected" : ""}>${yr}-${yr + 1}</option>`
+    );
+  }
+  return years.join("");
+}
+
+async function updateSemesterPreviewBox(yearValue, previewEl) {
+  if (!previewEl || !yearValue) return;
+  previewEl.textContent = "Calculating semester...";
+  try {
+    const res = await adminApi.previewStudentSemester(Number(yearValue));
+    if (res.is_completed) {
+      previewEl.textContent = `Completed (8 Semesters) • Active Calendar: ${res.active_academic_year}`;
+    } else if (res.calculated_semester) {
+      const parity = res.active_term_number % 2 === 1 ? "Odd" : "Even";
+      previewEl.textContent = `Semester ${res.calculated_semester} (${parity}) • Active Calendar: ${res.active_academic_year}`;
+    } else {
+      previewEl.textContent = `${res.semester_status}${res.active_academic_year ? ` (Active: ${res.active_academic_year})` : ""}`;
+    }
+  } catch (err) {
+    previewEl.textContent = err.message || "Unable to calculate semester.";
+  }
+}
+
 async function renderStudents(container) {
   const data = await adminApi.listStudents({
     page: state.page,
@@ -270,7 +323,7 @@ async function renderStudents(container) {
         <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
           ${renderSearchInput({
             id: "entity-search",
-            placeholder: "Search name, email, roll...",
+            placeholder: "Search name, email, student ID...",
             value: state.search,
           })}
           <select id="student-archive-filter" class="form-control" style="max-width:200px;" aria-label="Student archive filter">
@@ -282,11 +335,19 @@ async function renderStudents(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "roll_number", label: "Roll No" },
+          { key: "roll_number", label: "Student ID" },
           { label: "Name", render: (r) => escapeHtml(r.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.user.email) },
           { label: "Department", render: (r) => escapeHtml(r.department.code) },
-          { key: "current_semester_number", label: "Sem" },
+          {
+            label: "Admission Year",
+            render: (r) =>
+              escapeHtml(
+                r.admission_academic_year ||
+                  `${r.admission_year}-${r.admission_year + 1}`
+              ),
+          },
+          { label: "Semester", render: (r) => formatStudentSemesterBadge(r) },
           {
             label: "Status",
             render: (r) =>
@@ -303,6 +364,7 @@ async function renderStudents(container) {
               r.is_archived
                 ? `<button class="btn btn-outline btn-sm restore-student-btn" data-id="${r.id}" data-name="${escapeHtml(r.user.full_name)}" data-email="${escapeHtml(r.user.email)}" data-roll="${escapeHtml(r.roll_number)}" type="button">Restore</button>`
                 : `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                    <button class="btn btn-outline btn-sm edit-student-btn" data-id="${r.id}" type="button">Edit</button>
                     <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
                       r.user.is_active ? "Deactivate" : "Activate"
                     }</button>
@@ -429,6 +491,359 @@ async function renderStudents(container) {
     });
   });
 
+  container.querySelectorAll(".edit-student-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const stu = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!stu) return;
+      let deptChanged = false;
+      let yearChanged = false;
+
+      openFormModal({
+        title: `Edit Student (${stu.roll_number})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-stu-roll">Student ID</label>
+            <input id="edit-stu-roll" name="roll_number" value="${escapeHtml(stu.roll_number)}" class="form-control" required />
+            <small class="text-muted">Format: S-DEPTCODE-YYYY-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(stu.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(stu.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-student-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div class="form-group">
+            <label class="form-label" for="edit-stu-adm-year">Admission Academic Year</label>
+            <select id="edit-stu-adm-year" name="admission_year" class="form-control" required>
+              ${buildAdmissionAcademicYearOptions(stu.admission_year)}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Calculated Semester (Auto)</label>
+            <div id="edit-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
+          </div>
+          <div id="edit-stu-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input id="edit-stu-recalc" name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Student ID for the updated department / admission year</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(stu.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Date of Birth</label><input name="date_of_birth" type="date" value="${escapeHtml(stu.date_of_birth || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${stu.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!stu.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-student-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              deptChanged = Boolean(val && Number(val) !== stu.department_id);
+              const wrap = document.getElementById("edit-stu-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(stu.department.id),
+            label: `${stu.department.code} — ${stu.department.name}`,
+          });
+
+          const yearEl = document.getElementById("edit-stu-adm-year");
+          const previewEl = document.getElementById("edit-stu-sem-preview");
+          updateSemesterPreviewBox(yearEl?.value, previewEl);
+          yearEl?.addEventListener("change", () => {
+            yearChanged = Number(yearEl.value) !== stu.admission_year;
+            const wrap = document.getElementById("edit-stu-recalc-wrap");
+            if (wrap) {
+              wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
+            }
+            updateSemesterPreviewBox(yearEl.value, previewEl);
+          });
+
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            admission_year: Number(form.admission_year),
+            phone: form.phone || null,
+            date_of_birth: form.date_of_birth || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.roll_number) {
+            payload.roll_number = form.roll_number;
+          }
+          const updated = await adminApi.updateStudent(stu.id, payload);
+          showToast(
+            `Student updated (${updated.roll_number}).`,
+            "success"
+          );
+          renderStudents(container);
+        },
+      });
+    });
+  });
+
+  container.querySelectorAll(".edit-student-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const stu = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!stu) return;
+      let deptChanged = false;
+      let yearChanged = false;
+
+      openFormModal({
+        title: `Edit Student (${stu.roll_number})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-stu-roll">Student ID</label>
+            <input id="edit-stu-roll" name="roll_number" value="${escapeHtml(stu.roll_number)}" class="form-control" required />
+            <small class="text-muted">Format: S-DEPTCODE-YYYY-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(stu.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(stu.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-student-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div class="form-group">
+            <label class="form-label" for="edit-stu-adm-year">Admission Academic Year</label>
+            <select id="edit-stu-adm-year" name="admission_year" class="form-control" required>
+              ${buildAdmissionAcademicYearOptions(stu.admission_year)}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Calculated Semester (Auto)</label>
+            <div id="edit-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
+          </div>
+          <div id="edit-stu-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input id="edit-stu-recalc" name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Student ID for the updated department / admission year</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(stu.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Date of Birth</label><input name="date_of_birth" type="date" value="${escapeHtml(stu.date_of_birth || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${stu.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!stu.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-student-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              deptChanged = Boolean(val && Number(val) !== stu.department_id);
+              const wrap = document.getElementById("edit-stu-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(stu.department.id),
+            label: `${stu.department.code} — ${stu.department.name}`,
+          });
+
+          const yearEl = document.getElementById("edit-stu-adm-year");
+          const previewEl = document.getElementById("edit-stu-sem-preview");
+          updateSemesterPreviewBox(yearEl?.value, previewEl);
+          yearEl?.addEventListener("change", () => {
+            yearChanged = Number(yearEl.value) !== stu.admission_year;
+            const wrap = document.getElementById("edit-stu-recalc-wrap");
+            if (wrap) {
+              wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
+            }
+            updateSemesterPreviewBox(yearEl.value, previewEl);
+          });
+
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            admission_year: Number(form.admission_year),
+            phone: form.phone || null,
+            date_of_birth: form.date_of_birth || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.roll_number) {
+            payload.roll_number = form.roll_number;
+          }
+          const updated = await adminApi.updateStudent(stu.id, payload);
+          showToast(
+            `Student updated (${updated.roll_number}).`,
+            "success"
+          );
+          renderStudents(container);
+        },
+      });
+    });
+  });
+
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Student",
@@ -443,17 +858,36 @@ async function renderStudents(container) {
           placeholder: "Search department by code or name...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Roll Number</label><input name="roll_number" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Admission Year</label><input name="admission_year" type="number" value="2026" class="form-control" required /></div>
+        <div class="form-group">
+          <label class="form-label" for="create-stu-adm-year">Admission Academic Year</label>
+          <select id="create-stu-adm-year" name="admission_year" class="form-control" required>
+            ${buildAdmissionAcademicYearOptions(2026)}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Calculated Semester (Auto)</label>
+          <div id="create-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
+        </div>
       `,
-      onMount: () => [mountDepartmentSelect("student-dept-select")],
+      onMount: () => {
+        const yearEl = document.getElementById("create-stu-adm-year");
+        const previewEl = document.getElementById("create-stu-sem-preview");
+        updateSemesterPreviewBox(yearEl?.value, previewEl);
+        yearEl?.addEventListener("change", () =>
+          updateSemesterPreviewBox(yearEl.value, previewEl)
+        );
+        return [mountDepartmentSelect("student-dept-select")];
+      },
       onSubmit: async (form) => {
-        await adminApi.createStudent({
+        const created = await adminApi.createStudent({
           ...form,
           department_id: Number(form.department_id),
           admission_year: Number(form.admission_year),
         });
-        showToast("Student created.", "success");
+        showToast(
+          `Student created successfully. Generated Student ID: ${created.roll_number}`,
+          "success"
+        );
         renderStudents(container);
       },
     });
@@ -479,7 +913,7 @@ async function renderFaculty(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "employee_id", label: "Emp ID" },
+          { key: "employee_id", label: "Faculty ID" },
           { label: "Name", render: (r) => escapeHtml(r.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.user.email) },
           { key: "designation", label: "Designation" },
@@ -495,9 +929,12 @@ async function renderFaculty(container) {
           {
             label: "Action",
             render: (r) =>
-              `<button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
-                r.user.is_active ? "Deactivate" : "Activate"
-              }</button>`,
+              `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm edit-faculty-btn" data-id="${r.id}" type="button">Edit</button>
+                <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
+                  r.user.is_active ? "Deactivate" : "Activate"
+                }</button>
+              </div>`,
           },
         ],
         rows: data.items,
@@ -529,6 +966,107 @@ async function renderFaculty(container) {
     });
   });
 
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Faculty",
@@ -543,16 +1081,18 @@ async function renderFaculty(container) {
           placeholder: "Search department by code or name...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Employee ID</label><input name="employee_id" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Designation</label><input name="designation" class="form-control" required /></div>
       `,
       onMount: () => [mountDepartmentSelect("faculty-dept-select")],
       onSubmit: async (form) => {
-        await adminApi.createFaculty({
+        const created = await adminApi.createFaculty({
           ...form,
           department_id: Number(form.department_id),
         });
-        showToast("Faculty created.", "success");
+        showToast(
+          `Faculty created successfully. Generated Faculty ID: ${created.employee_id}`,
+          "success"
+        );
         renderFaculty(container);
       },
     });
@@ -607,6 +1147,107 @@ async function renderDepartments(container) {
       }
     });
   });
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Department",
@@ -623,22 +1264,120 @@ async function renderDepartments(container) {
   });
 }
 
+function getDefaultIndianAcademicYear() {
+  const now = new Date();
+  const year = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
+  return `${year}-${year + 1}`;
+}
+
+function buildSemesterNumberOptions(selected = 1) {
+  return Array.from({ length: 10 }, (_, idx) => {
+    const num = idx + 1;
+    const semType = num % 2 === 1 ? "Odd" : "Even";
+    return `<option value="${num}" ${Number(selected) === num ? "selected" : ""}>Semester ${num} (${semType})</option>`;
+  }).join("");
+}
+
+function validateSemesterFormInputs(form) {
+  const yearStr = String(form.academic_year || "").trim();
+  const match = yearStr.match(/^(\d{4})-(\d{4})$/);
+  if (!match || Number(match[2]) !== Number(match[1]) + 1) {
+    throw new Error(
+      "Academic year must follow YYYY-YYYY format with consecutive years (e.g. 2026-2027)."
+    );
+  }
+  if (!form.start_date || !form.end_date || form.end_date <= form.start_date) {
+    throw new Error("End date must be later than start date.");
+  }
+  return yearStr;
+}
+
+function renderSemesterFormFields(semester = null) {
+  const termNumber = semester?.term_number ?? 1;
+  const academicYear = semester?.academic_year ?? getDefaultIndianAcademicYear();
+  const startDate = semester?.start_date ?? "";
+  const endDate = semester?.end_date ?? "";
+  const isActive = semester ? Boolean(semester.is_active) : true;
+  return `
+    <div class="form-group">
+      <label class="form-label" for="sem-term-number">Semester Number</label>
+      <select id="sem-term-number" name="term_number" class="form-control" required>
+        ${buildSemesterNumberOptions(termNumber)}
+      </select>
+      <small class="text-muted">Semester name is generated automatically (e.g. Semester ${escapeHtml(termNumber)}).</small>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sem-academic-year">Academic Year</label>
+      <input
+        id="sem-academic-year"
+        name="academic_year"
+        class="form-control"
+        value="${escapeHtml(academicYear)}"
+        placeholder="2026-2027"
+        pattern="^\\d{4}-\\d{4}$"
+        required
+      />
+      <small class="text-muted">Format: YYYY-YYYY (e.g. 2026-2027).</small>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sem-start-date">Start Date</label>
+      <input id="sem-start-date" name="start_date" type="date" value="${escapeHtml(startDate)}" class="form-control" required />
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sem-end-date">End Date</label>
+      <input id="sem-end-date" name="end_date" type="date" value="${escapeHtml(endDate)}" class="form-control" required />
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="sem-status">Status</label>
+      <select id="sem-status" name="is_active" class="form-control">
+        <option value="true" ${isActive ? "selected" : ""}>Active</option>
+        <option value="false" ${!isActive ? "selected" : ""}>Inactive</option>
+      </select>
+    </div>
+  `;
+}
+
 async function renderSemesters(container) {
-  const data = await adminApi.listSemesters({ page: state.page, page_size: 10 });
+  const data = await adminApi.listSemesters({
+    page: state.page,
+    page_size: 10,
+    search: state.search,
+  });
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">Semesters</h2>
+        ${renderSearchInput({
+          id: "entity-search",
+          placeholder: "Search semester or academic year...",
+          value: state.search,
+        })}
         <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Semester</button>
       </div>
       ${renderDataTable({
         columns: [
           { key: "id", label: "ID" },
-          { key: "name", label: "Name" },
+          { key: "name", label: "Semester" },
+          {
+            label: "Type",
+            render: (r) => {
+              const semType =
+                r.semester_type || (r.term_number % 2 === 1 ? "Odd" : "Even");
+              return renderStatusBadge(
+                semType,
+                semType === "Odd" ? "info" : "warning"
+              );
+            },
+          },
           { key: "academic_year", label: "Academic Year" },
-          { key: "term_number", label: "Term" },
-          { key: "start_date", label: "Start" },
-          { key: "end_date", label: "End" },
+          { key: "term_number", label: "Sem No" },
+          {
+            label: "Start Date",
+            render: (r) => escapeHtml(formatIndianDate(r.start_date)),
+          },
+          {
+            label: "End Date",
+            render: (r) => escapeHtml(formatIndianDate(r.end_date)),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -650,16 +1389,25 @@ async function renderSemesters(container) {
           {
             label: "Action",
             render: (r) =>
-              `<button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.is_active}" type="button">${
-                r.is_active ? "Deactivate" : "Activate"
-              }</button>`,
+              `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm edit-semester-btn" data-id="${r.id}" type="button">Edit</button>
+                <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.is_active}" type="button">${
+                  r.is_active ? "Deactivate" : "Activate"
+                }</button>
+              </div>`,
           },
         ],
         rows: data.items,
+        emptyTitle: "No semesters configured",
       })}
       ${renderPagination(data)}
     </section>
   `;
+  document.getElementById("entity-search")?.addEventListener("change", (e) => {
+    state.search = e.target.value;
+    state.page = 1;
+    renderSemesters(container);
+  });
   bindPagination(data, () => renderSemesters(container));
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -674,23 +1422,146 @@ async function renderSemesters(container) {
       }
     });
   });
+  container.querySelectorAll(".edit-semester-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const sem = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!sem) return;
+      openFormModal({
+        title: `Edit ${sem.name} (${sem.academic_year})`,
+        fieldsHtml: renderSemesterFormFields(sem),
+        onSubmit: async (form) => {
+          const academicYear = validateSemesterFormInputs(form);
+          const termNumber = Number(form.term_number);
+          await adminApi.updateSemester(sem.id, {
+            name: `Semester ${termNumber}`,
+            academic_year: academicYear,
+            term_number: termNumber,
+            start_date: form.start_date,
+            end_date: form.end_date,
+            is_active: form.is_active === "true",
+          });
+          showToast("Semester updated.", "success");
+          renderSemesters(container);
+        },
+      });
+    });
+  });
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Semester",
-      fieldsHtml: `
-        <div class="form-group"><label class="form-label">Name</label><input name="name" class="form-control" placeholder="Fall 2026" required /></div>
-        <div class="form-group"><label class="form-label">Academic Year</label><input name="academic_year" class="form-control" placeholder="2026-2027" required /></div>
-        <div class="form-group"><label class="form-label">Term Number</label><input name="term_number" type="number" value="1" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Start Date</label><input name="start_date" type="date" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">End Date</label><input name="end_date" type="date" class="form-control" required /></div>
-      `,
+      fieldsHtml: renderSemesterFormFields(),
       onSubmit: async (form) => {
+        const academicYear = validateSemesterFormInputs(form);
+        const termNumber = Number(form.term_number);
         await adminApi.createSemester({
-          ...form,
-          term_number: Number(form.term_number),
-          is_active: true,
+          academic_year: academicYear,
+          term_number: termNumber,
+          start_date: form.start_date,
+          end_date: form.end_date,
+          is_active: form.is_active === "true",
         });
-        showToast("Semester created.", "success");
+        showToast(`Semester ${termNumber} created.`, "success");
         renderSemesters(container);
       },
     });
@@ -732,6 +1603,107 @@ async function renderCourses(container) {
     renderCourses(container);
   });
   bindPagination(data, () => renderCourses(container));
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Course",
@@ -795,6 +1767,107 @@ async function renderOfferings(container) {
     </section>
   `;
   bindPagination(data, () => renderOfferings(container));
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Course Offering",
@@ -867,6 +1940,107 @@ async function renderEnrollments(container) {
     </section>
   `;
   bindPagination(data, () => renderEnrollments(container));
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Enroll Student",
@@ -949,6 +2123,107 @@ async function renderNotices(container) {
       }
     });
   });
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Publish Notice",
@@ -1017,6 +2292,107 @@ async function renderTimetable(container) {
       }
     });
   });
+  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
+      if (!fac) return;
+
+      openFormModal({
+        title: `Edit Faculty (${fac.employee_id})`,
+        fieldsHtml: `
+          <div class="form-group">
+            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
+            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
+          </div>
+          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          ${renderSearchableSelectField({
+            id: "edit-faculty-dept-select",
+            name: "department_id",
+            label: "Department",
+            placeholder: "Search department by code or name...",
+            required: true,
+          })}
+          <div id="edit-fac-recalc-wrap" class="form-group hidden">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+              <input name="recalculate_id" type="checkbox" value="true" />
+              <span>Recalculate Faculty ID for the new department</span>
+            </label>
+          </div>
+          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
+          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
+          <div class="form-group">
+            <label class="form-label">Account Status</label>
+            <select name="is_active" class="form-control">
+              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
+              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
+            </select>
+          </div>
+        `,
+        onMount: () => {
+          const deptSel = initSearchableSelect({
+            id: "edit-faculty-dept-select",
+            emptyMessage: "No active departments found.",
+            loadErrorMessage: "Failed to load departments.",
+            fetchOptions: ({ search, page, pageSize }) =>
+              adminApi.listDepartments({
+                search,
+                is_active: true,
+                page,
+                page_size: pageSize,
+              }),
+            mapOption: (d) => ({
+              value: String(d.id),
+              label: `${d.code} — ${d.name}`,
+              description: d.description || "Active department",
+            }),
+            onChange: (val) => {
+              const wrap = document.getElementById("edit-fac-recalc-wrap");
+              if (wrap) {
+                wrap.classList.toggle(
+                  "hidden",
+                  !(val && Number(val) !== fac.department_id)
+                );
+              }
+            },
+          });
+          deptSel?.setValue({
+            value: String(fac.department.id),
+            label: `${fac.department.code} — ${fac.department.name}`,
+          });
+          return [
+            {
+              required: true,
+              errorMessage: "Please select a department.",
+              ctrl: deptSel,
+            },
+          ];
+        },
+        onSubmit: async (form) => {
+          const recalc = form.recalculate_id === "true";
+          const payload = {
+            full_name: form.full_name,
+            email: form.email,
+            department_id: Number(form.department_id),
+            designation: form.designation,
+            phone: form.phone || null,
+            joining_date: form.joining_date || null,
+            is_active: form.is_active === "true",
+            recalculate_id: recalc,
+          };
+          if (!recalc && form.employee_id) {
+            payload.employee_id = form.employee_id;
+          }
+          const updated = await adminApi.updateFaculty(fac.id, payload);
+          showToast(`Faculty updated (${updated.employee_id}).`, "success");
+          renderFaculty(container);
+        },
+      });
+    });
+  });
+
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Timetable Slot",
@@ -1082,29 +2458,33 @@ async function renderOfferingLookupSection(container, { title, mode }) {
       return;
     }
     sub.innerHTML = renderLoading();
-    if (mode === "attendance") {
-      const data = await opsApi.listOfferingSessions(select.value);
-      sub.innerHTML = renderDataTable({
-        columns: [
-          { key: "id", label: "Session ID" },
-          { key: "session_date", label: "Date" },
-          { key: "session_number", label: "#" },
-          { key: "topic", label: "Topic" },
-          { label: "Records", render: (r) => escapeHtml(r.records.length) },
-        ],
-        rows: data.items,
-      });
-    } else {
-      const data = await opsApi.listOfferingAssignments(select.value);
-      sub.innerHTML = renderDataTable({
-        columns: [
-          { key: "id", label: "ID" },
-          { key: "title", label: "Title" },
-          { key: "due_at", label: "Due At" },
-          { key: "max_score", label: "Max Score" },
-        ],
-        rows: data.items,
-      });
+    try {
+      if (mode === "attendance") {
+        const data = await opsApi.listOfferingSessions(select.value);
+        sub.innerHTML = renderDataTable({
+          columns: [
+            { key: "id", label: "Session ID" },
+            { key: "session_date", label: "Date" },
+            { key: "session_number", label: "#" },
+            { key: "topic", label: "Topic" },
+            { label: "Records", render: (r) => escapeHtml(r.records.length) },
+          ],
+          rows: data.items,
+        });
+      } else {
+        const data = await opsApi.listOfferingAssignments(select.value);
+        sub.innerHTML = renderDataTable({
+          columns: [
+            { key: "id", label: "ID" },
+            { key: "title", label: "Title" },
+            { key: "due_at", label: "Due At" },
+            { key: "max_score", label: "Max Score" },
+          ],
+          rows: data.items,
+        });
+      }
+    } catch (err) {
+      sub.innerHTML = renderErrorState(err.message || "Failed to load data.");
     }
   }
 

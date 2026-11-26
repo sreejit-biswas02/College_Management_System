@@ -8,6 +8,7 @@ from app.models.academic import Department
 from app.models.user import Faculty, User, UserRole
 from app.schemas.faculty import AdminFacultyCreate, AdminFacultyUpdate
 from app.services.exceptions import ConflictError, NotFoundError, commit_or_conflict
+from app.services.id_generator import generate_faculty_id
 
 
 def _faculty_query():
@@ -21,22 +22,21 @@ def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
-def _ensure_department_exists(db: Session, department_id: int) -> None:
-    if db.get(Department, department_id) is None:
+def _get_department_or_404(db: Session, department_id: int) -> Department:
+    department = db.get(Department, department_id)
+    if department is None:
         raise NotFoundError("Department not found.")
+    return department
 
 
 def create_faculty(db: Session, payload: AdminFacultyCreate) -> Faculty:
-    """Create a Faculty user account and profile in a single transaction."""
+    """Create a Faculty user account and profile with an auto-generated Faculty ID."""
     normalized_email = _normalize_email(payload.email)
     if db.scalar(select(User).where(User.email == normalized_email)) is not None:
         raise ConflictError("Email is already registered.")
 
-    employee_id = payload.employee_id.strip()
-    if db.scalar(select(Faculty).where(Faculty.employee_id == employee_id)) is not None:
-        raise ConflictError("Employee ID is already registered.")
-
-    _ensure_department_exists(db, payload.department_id)
+    department = _get_department_or_404(db, payload.department_id)
+    employee_id = generate_faculty_id(db, department_code=department.code)
 
     user = User(
         email=normalized_email,
@@ -140,21 +140,26 @@ def update_faculty(
     if payload.is_active is not None:
         user.is_active = payload.is_active
 
+    target_department = faculty.department
     if payload.department_id is not None:
-        _ensure_department_exists(db, payload.department_id)
-        faculty.department_id = payload.department_id
+        target_department = _get_department_or_404(db, payload.department_id)
+        faculty.department_id = target_department.id
 
-    if payload.employee_id is not None:
-        employee_id = payload.employee_id.strip()
+    if payload.recalculate_id:
+        faculty.employee_id = generate_faculty_id(
+            db,
+            department_code=target_department.code,
+        )
+    elif payload.employee_id is not None:
         existing_emp = db.scalar(
             select(Faculty).where(
-                Faculty.employee_id == employee_id,
+                Faculty.employee_id == payload.employee_id,
                 Faculty.id != faculty.id,
             )
         )
         if existing_emp is not None:
-            raise ConflictError("Employee ID is already registered.")
-        faculty.employee_id = employee_id
+            raise ConflictError("Faculty ID is already registered.")
+        faculty.employee_id = payload.employee_id
 
     if payload.designation is not None:
         faculty.designation = payload.designation.strip()

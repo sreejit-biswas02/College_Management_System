@@ -100,7 +100,7 @@ async function renderFacultyProfile(container) {
       <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;">
         <div><div class="text-muted">Full Name</div><strong>${escapeHtml(profile.user.full_name)}</strong></div>
         <div><div class="text-muted">Email</div><strong>${escapeHtml(profile.user.email)}</strong></div>
-        <div><div class="text-muted">Employee ID</div><strong>${escapeHtml(profile.employee_id)}</strong></div>
+        <div><div class="text-muted">Faculty ID</div><strong>${escapeHtml(profile.employee_id)}</strong></div>
         <div><div class="text-muted">Designation</div><strong>${escapeHtml(profile.designation)}</strong></div>
         <div><div class="text-muted">Department</div><strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong></div>
         <div><div class="text-muted">Joining Date</div><strong>${escapeHtml(profile.joining_date || "—")}</strong></div>
@@ -162,7 +162,7 @@ async function renderFacultyStudents(container) {
       const data = await opsApi.listOfferingEnrollments(select.value, { page: 1, page_size: 100 });
       tableEl.innerHTML = renderDataTable({
         columns: [
-          { label: "Roll No", render: (r) => escapeHtml(r.student.roll_number) },
+          { label: "Student ID", render: (r) => escapeHtml(r.student.roll_number) },
           { label: "Name", render: (r) => escapeHtml(r.student.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.student.user.email) },
           {
@@ -218,7 +218,14 @@ async function renderFacultyAttendance(container) {
 
   async function load() {
     listEl.innerHTML = renderLoading();
-    const data = await opsApi.listOfferingSessions(select.value, { page: 1, page_size: 20 });
+    let data;
+    try {
+      data = await opsApi.listOfferingSessions(select.value, { page: 1, page_size: 20 });
+    } catch (err) {
+      listEl.innerHTML = renderErrorState(err.message || "Failed to load attendance sessions.");
+      return;
+    }
+    const sessionsById = new Map(data.items.map((s) => [String(s.id), s]));
     listEl.innerHTML = renderDataTable({
       columns: [
         { key: "id", label: "ID" },
@@ -239,6 +246,10 @@ async function renderFacultyAttendance(container) {
     listEl.querySelectorAll(".mark-att-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const sessionId = btn.dataset.id;
+        const session = sessionsById.get(String(sessionId));
+        const existingStatusByStudent = new Map(
+          (session?.records || []).map((rec) => [rec.student_id, rec.status])
+        );
         btn.disabled = true;
         let enrolled;
         try {
@@ -258,18 +269,19 @@ async function renderFacultyAttendance(container) {
           return;
         }
         const rowsHtml = activeStudents
-          .map(
-            (e) => `
+          .map((e) => {
+            const currentStatus = existingStatusByStudent.get(e.student.id) || "present";
+            return `
             <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;margin-bottom:0.5rem;">
               <span>${escapeHtml(`${e.student.roll_number} — ${e.student.user.full_name}`)}</span>
               <select class="form-control att-status-sel" data-student-id="${e.student.id}" style="max-width:140px;">
-                <option value="present">Present</option>
-                <option value="absent">Absent</option>
-                <option value="late">Late</option>
-                <option value="excused">Excused</option>
+                <option value="present" ${currentStatus === "present" ? "selected" : ""}>Present</option>
+                <option value="absent" ${currentStatus === "absent" ? "selected" : ""}>Absent</option>
+                <option value="late" ${currentStatus === "late" ? "selected" : ""}>Late</option>
+                <option value="excused" ${currentStatus === "excused" ? "selected" : ""}>Excused</option>
               </select>
-            </div>`
-          )
+            </div>`;
+          })
           .join("");
 
         openModal({
@@ -366,10 +378,16 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
 
   async function loadSubmissions(assignmentId) {
     subEl.innerHTML = renderLoading("Loading submissions...");
-    const subs = await opsApi.listAssignmentSubmissions(assignmentId, {
-      page: 1,
-      page_size: 50,
-    });
+    let subs;
+    try {
+      subs = await opsApi.listAssignmentSubmissions(assignmentId, {
+        page: 1,
+        page_size: 50,
+      });
+    } catch (err) {
+      subEl.innerHTML = renderErrorState(err.message || "Failed to load submissions.");
+      return;
+    }
     subEl.innerHTML = `
       <h3 class="card-title" style="margin-bottom:0.75rem;">Submissions (Assignment #${escapeHtml(assignmentId)})</h3>
       ${renderDataTable({
@@ -377,6 +395,11 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
           { key: "id", label: "ID" },
           { key: "student_id", label: "Student ID" },
           { key: "content", label: "Content" },
+          {
+            label: "Attachments",
+            render: (r) =>
+              renderFileListHtml(r.attachments || [], { compact: true }),
+          },
           { key: "score", label: "Score" },
           { key: "feedback", label: "Feedback" },
           {
@@ -389,6 +412,7 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
         emptyTitle: "No submissions yet",
       })}
     `;
+    bindFileListActions(subEl);
     subEl.querySelectorAll(".grade-sub-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         openFormModal({
@@ -413,10 +437,16 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
   async function load() {
     asgEl.innerHTML = renderLoading();
     subEl.innerHTML = "";
-    const data = await opsApi.listOfferingAssignments(select.value, {
-      page: 1,
-      page_size: 20,
-    });
+    let data;
+    try {
+      data = await opsApi.listOfferingAssignments(select.value, {
+        page: 1,
+        page_size: 20,
+      });
+    } catch (err) {
+      asgEl.innerHTML = renderErrorState(err.message || "Failed to load assignments.");
+      return;
+    }
     asgEl.innerHTML = renderDataTable({
       columns: [
         { key: "id", label: "ID" },

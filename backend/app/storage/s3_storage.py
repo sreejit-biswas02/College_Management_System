@@ -102,17 +102,23 @@ class S3CompatibleStorage:
         *,
         download_filename: str,
         expires_in_seconds: int,
+        disposition: str = "attachment",
+        content_type: str | None = None,
     ) -> str:
         """Generate a short-lived signed GET URL with Content-Disposition."""
         safe_name = download_filename.replace('"', "")
+        safe_disposition = "inline" if disposition == "inline" else "attachment"
+        params = {
+            "Bucket": self.bucket_name,
+            "Key": storage_key,
+            "ResponseContentDisposition": f'{safe_disposition}; filename="{safe_name}"',
+        }
+        if content_type:
+            params["ResponseContentType"] = content_type
         try:
             return self._client.generate_presigned_url(
                 "get_object",
-                Params={
-                    "Bucket": self.bucket_name,
-                    "Key": storage_key,
-                    "ResponseContentDisposition": f'attachment; filename="{safe_name}"',
-                },
+                Params=params,
                 ExpiresIn=expires_in_seconds,
             )
         except (BotoCoreError, ClientError) as exc:

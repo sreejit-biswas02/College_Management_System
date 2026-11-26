@@ -3,7 +3,14 @@
 import re
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    computed_field,
+    field_validator,
+)
 
 from app.models.user import UserRole
 
@@ -52,8 +59,17 @@ class StudentProfileResponse(BaseModel):
     roll_number: str
     admission_year: int
     current_semester_number: int
+    calculated_semester: int | None = None
+    semester_status: str = "In Progress"
+    is_completed: bool = False
     phone: str | None = None
     date_of_birth: date | None = None
+
+    @computed_field
+    @property
+    def admission_academic_year(self) -> str:
+        """Return YYYY-YYYY academic year corresponding to admission_year."""
+        return f"{self.admission_year}-{self.admission_year + 1}"
 
 
 class FacultyProfileResponse(BaseModel):

@@ -1,5 +1,6 @@
 """Business logic for authorized file uploads, downloads, and cleanup."""
 
+import inspect
 import io
 import logging
 
@@ -267,12 +268,18 @@ def _get_active_file(db: Session, file_id: int) -> StoredFile:
     return record
 
 
+INLINE_VIEWABLE_TYPES = frozenset(
+    {"image/png", "image/jpeg", "application/pdf", "text/plain"}
+)
+
+
 def get_authorized_file_download(
     db: Session,
     *,
     file_id: int,
     actor: User,
     storage: StorageBackend,
+    inline: bool = False,
 ) -> tuple[StoredFile, str, int]:
     """Authorize file access and generate a short-lived signed URL."""
     record = _get_active_file(db, file_id)
@@ -285,11 +292,26 @@ def get_authorized_file_download(
             raise ForbiddenError("You do not have permission to access this file.")
 
     expires = get_settings().SIGNED_URL_EXPIRE_SECONDS
-    url = storage.generate_presigned_download_url(
-        record.storage_key,
-        download_filename=record.original_filename,
-        expires_in_seconds=expires,
+    disposition = (
+        "inline"
+        if (inline and record.content_type in INLINE_VIEWABLE_TYPES)
+        else "attachment"
     )
+    sig = inspect.signature(storage.generate_presigned_download_url)
+    if "disposition" in sig.parameters:
+        url = storage.generate_presigned_download_url(
+            record.storage_key,
+            download_filename=record.original_filename,
+            expires_in_seconds=expires,
+            disposition=disposition,
+            content_type=record.content_type,
+        )
+    else:
+        url = storage.generate_presigned_download_url(
+            record.storage_key,
+            download_filename=record.original_filename,
+            expires_in_seconds=expires,
+        )
     return record, url, expires
 
 

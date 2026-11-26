@@ -83,10 +83,13 @@ class FakeStorage:
         *,
         download_filename: str,
         expires_in_seconds: int,
+        disposition: str = "attachment",
+        content_type: str | None = None,
     ) -> str:
         return (
             f"https://r2.example.test/{storage_key}"
             f"?filename={download_filename}&expires={expires_in_seconds}"
+            f"&disposition={disposition}"
         )
 
 
@@ -278,7 +281,7 @@ def test_valid_pdf_and_png_uploads_and_signed_download(
     assert dl.status_code == 200
     assert dl.json()["download_url"].startswith("https://r2.example.test/")
 
-    # Student uploads PNG to own submission; faculty downloads it
+    # Student uploads PNG and PDF to own submission; faculty views/downloads both
     png_resp = client.post(
         f"/api/v1/submissions/{sub_id}/files",
         headers=s1_hdr,
@@ -287,8 +290,38 @@ def test_valid_pdf_and_png_uploads_and_signed_download(
     assert png_resp.status_code == 201
     png_id = png_resp.json()["id"]
 
-    fac_dl = client.get(f"/api/v1/files/{png_id}", headers=f1_hdr)
-    assert fac_dl.status_code == 200
+    sub_pdf_resp = client.post(
+        f"/api/v1/submissions/{sub_id}/files",
+        headers=s1_hdr,
+        files={"file": ("report.pdf", VALID_PDF, "application/pdf")},
+    )
+    assert sub_pdf_resp.status_code == 201
+    sub_pdf_id = sub_pdf_resp.json()["id"]
+
+    # Submission listing includes both attachments
+    subs_list = client.get(
+        f"/api/v1/assignments/{asg_id}/submissions",
+        headers=f1_hdr,
+    )
+    assert subs_list.status_code == 200
+    attachments = subs_list.json()["items"][0]["attachments"]
+    assert {a["original_filename"] for a in attachments} == {
+        "diagram.png",
+        "report.pdf",
+    }
+
+    fac_view_png = client.get(f"/api/v1/files/{png_id}?inline=true", headers=f1_hdr)
+    assert fac_view_png.status_code == 200
+    assert "disposition=inline" in fac_view_png.json()["download_url"]
+
+    fac_dl_pdf = client.get(f"/api/v1/files/{sub_pdf_id}", headers=f1_hdr)
+    assert fac_dl_pdf.status_code == 200
+    assert "disposition=attachment" in fac_dl_pdf.json()["download_url"]
+
+    # Unassigned faculty cannot access student's submission files
+    f2_hdr = file_world["f2_hdr"]
+    assert client.get(f"/api/v1/files/{png_id}", headers=f2_hdr).status_code == 403
+    assert client.get(f"/api/v1/files/{sub_pdf_id}", headers=f2_hdr).status_code == 403
 
 
 def test_upload_validation_rejections(

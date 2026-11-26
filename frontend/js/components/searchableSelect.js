@@ -105,10 +105,43 @@ export function initSearchableSelect({
     }
   }
 
+  function positionDropdown() {
+    if (!isOpen || !document.body.contains(inputEl)) {
+      return;
+    }
+    const rect = inputEl.getBoundingClientRect();
+    const gap = 4;
+    const viewportMargin = 12;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - viewportMargin;
+    const spaceAbove = rect.top - gap - viewportMargin;
+    const flipAbove = spaceBelow < 180 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      120,
+      Math.min(260, flipAbove ? spaceAbove : spaceBelow)
+    );
+
+    listboxEl.style.left = `${Math.max(8, rect.left)}px`;
+    listboxEl.style.width = `${Math.min(rect.width, window.innerWidth - 16)}px`;
+    listboxEl.style.maxHeight = `${maxHeight}px`;
+
+    if (flipAbove) {
+      listboxEl.style.top = "auto";
+      listboxEl.style.bottom = `${window.innerHeight - rect.top + gap}px`;
+    } else {
+      listboxEl.style.bottom = "auto";
+      listboxEl.style.top = `${rect.bottom + gap}px`;
+    }
+  }
+
   function openDropdown() {
     isOpen = true;
+    if (listboxEl.parentElement !== document.body) {
+      listboxEl.setAttribute("data-ss-portal", id);
+      document.body.appendChild(listboxEl);
+    }
     listboxEl.classList.remove("hidden");
     inputEl.setAttribute("aria-expanded", "true");
+    positionDropdown();
   }
 
   function closeDropdown() {
@@ -142,6 +175,7 @@ export function initSearchableSelect({
   }
 
   function renderDropdown() {
+    positionDropdown();
     if (isLoading && options.length === 0) {
       listboxEl.innerHTML = `<div class="searchable-select-state">Loading...</div>`;
       return;
@@ -154,7 +188,12 @@ export function initSearchableSelect({
           <button type="button" class="btn btn-outline btn-sm ss-retry-btn">Retry</button>
         </div>
       `;
+      listboxEl.querySelector(".ss-retry-btn")?.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
       listboxEl.querySelector(".ss-retry-btn")?.addEventListener("click", (e) => {
+        e.preventDefault();
         e.stopPropagation();
         loadPage(1, currentQuery, false);
       });
@@ -203,8 +242,17 @@ export function initSearchableSelect({
     listboxEl.innerHTML = `${itemsHtml}${footerHtml}`;
 
     listboxEl.querySelectorAll(".searchable-select-option").forEach((btn) => {
+      btn.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
       btn.addEventListener("mousedown", (e) => {
         e.preventDefault();
+        e.stopPropagation();
+      });
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const idx = Number(btn.dataset.ssIndex);
         if (options[idx]) {
           selectOption(options[idx]);
@@ -212,7 +260,16 @@ export function initSearchableSelect({
       });
     });
 
-    listboxEl.querySelector(".ss-load-more-btn")?.addEventListener("mousedown", (e) => {
+    const loadMoreBtn = listboxEl.querySelector(".ss-load-more-btn");
+    loadMoreBtn?.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    loadMoreBtn?.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    loadMoreBtn?.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       loadPage(currentPage + 1, currentQuery, true);
@@ -315,14 +372,41 @@ export function initSearchableSelect({
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
       closeDropdown();
     }
   }
 
   function handleDocumentClick(e) {
-    if (rootEl && !rootEl.contains(e.target)) {
+    if (!document.body.contains(inputEl)) {
+      destroy();
+      return;
+    }
+    if (
+      rootEl &&
+      !rootEl.contains(e.target) &&
+      !listboxEl.contains(e.target)
+    ) {
       closeDropdown();
     }
+  }
+
+  function handleViewportChange() {
+    if (!document.body.contains(inputEl)) {
+      destroy();
+      return;
+    }
+    if (isOpen) {
+      positionDropdown();
+    }
+  }
+
+  function destroy() {
+    clearTimeout(debounceTimer);
+    document.removeEventListener("click", handleDocumentClick);
+    window.removeEventListener("resize", handleViewportChange);
+    window.removeEventListener("scroll", handleViewportChange, true);
+    listboxEl.remove();
   }
 
   inputEl.addEventListener("focus", handleFocus);
@@ -335,6 +419,8 @@ export function initSearchableSelect({
     loadPage(1, "", false);
   });
   document.addEventListener("click", handleDocumentClick);
+  window.addEventListener("resize", handleViewportChange);
+  window.addEventListener("scroll", handleViewportChange, true);
 
   return {
     getValue: () => hiddenEl.value,
@@ -348,9 +434,6 @@ export function initSearchableSelect({
     clear,
     reload: () => loadPage(1, inputEl.value, false),
     setError,
-    destroy: () => {
-      clearTimeout(debounceTimer);
-      document.removeEventListener("click", handleDocumentClick);
-    },
+    destroy,
   };
 }

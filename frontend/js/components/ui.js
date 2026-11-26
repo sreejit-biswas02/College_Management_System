@@ -9,6 +9,14 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+export function formatIndianDate(isoDate) {
+  if (!isoDate) return "—";
+  const match = String(isoDate).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return String(isoDate);
+  const [, year, month, day] = match;
+  return `${day}/${month}/${year}`;
+}
+
 export function renderLoading(message = "Loading...") {
   return `
     <div class="state-box" role="status">

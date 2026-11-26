@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.file import StoredFileResponse
+
 
 class AssignmentCreate(BaseModel):
     """Payload to publish an assignment for a course offering."""
@@ -92,3 +94,4 @@ class SubmissionResponse(BaseModel):
     feedback: str | None
     graded_at: datetime | None
     graded_by_faculty_id: int | None
+    attachments: list[StoredFileResponse] = Field(default_factory=list)

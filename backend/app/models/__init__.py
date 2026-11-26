@@ -4,6 +4,7 @@ from app.models.academic import Course, Department, Semester
 from app.models.assignment import Assignment, Submission
 from app.models.attendance import AttendanceRecord, AttendanceSession, AttendanceStatus
 from app.models.course_offering import CourseOffering, Enrollment, EnrollmentStatus
+from app.models.id_sequence import IDSequence
 from app.models.notice import Notice, NoticeTarget
 from app.models.stored_file import StoredFile
 from app.models.timetable import DayOfWeek, TimetableSlot
@@ -21,6 +22,7 @@ __all__ = [
     "Enrollment",
     "EnrollmentStatus",
     "Faculty",
+    "IDSequence",
     "Notice",
     "NoticeTarget",
     "Semester",

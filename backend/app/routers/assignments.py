@@ -3,11 +3,14 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db
 from app.dependencies.authentication import require_active_user
 from app.dependencies.permissions import require_roles
+from app.models.assignment import Submission
+from app.models.stored_file import StoredFile
 from app.models.user import User, UserRole
 from app.schemas.assignment import (
     AssignmentCreate,
@@ -18,9 +21,42 @@ from app.schemas.assignment import (
     SubmissionResponse,
 )
 from app.schemas.common import PaginatedResponse
+from app.schemas.file import StoredFileResponse
 from app.services import assignment_service
+from app.services.file_service import ENTITY_SUBMISSION
 
 router = APIRouter(tags=["Assignments & Submissions"])
+
+
+def _serialize_submissions_with_attachments(
+    db: Session,
+    submissions: list[Submission],
+) -> list[SubmissionResponse]:
+    """Attach active StoredFile metadata to serialized submission responses."""
+    if not submissions:
+        return []
+    sub_ids = [s.id for s in submissions]
+    files = list(
+        db.scalars(
+            select(StoredFile)
+            .where(
+                StoredFile.entity_type == ENTITY_SUBMISSION,
+                StoredFile.entity_id.in_(sub_ids),
+                StoredFile.is_active.is_(True),
+            )
+            .order_by(StoredFile.created_at.desc())
+        ).all()
+    )
+    grouped: dict[int, list[StoredFileResponse]] = {sid: [] for sid in sub_ids}
+    for f in files:
+        grouped.setdefault(f.entity_id, []).append(StoredFileResponse.model_validate(f))
+
+    results: list[SubmissionResponse] = []
+    for sub in submissions:
+        resp = SubmissionResponse.model_validate(sub)
+        resp.attachments = grouped.get(sub.id, [])
+        results.append(resp)
+    return results
 
 
 @router.post(
@@ -147,7 +183,7 @@ def list_assignment_submissions_endpoint(
         page_size=page_size,
     )
     return PaginatedResponse.create(
-        items=[SubmissionResponse.model_validate(s) for s in items],
+        items=_serialize_submissions_with_attachments(db, items),
         total=total,
         page=page,
         page_size=page_size,
@@ -169,7 +205,7 @@ def list_my_submissions_endpoint(
         page_size=page_size,
     )
     return PaginatedResponse.create(
-        items=[SubmissionResponse.model_validate(s) for s in items],
+        items=_serialize_submissions_with_attachments(db, items),
         total=total,
         page=page,
         page_size=page_size,
@@ -188,7 +224,7 @@ def get_submission_endpoint(
         submission_id,
         current_user,
     )
-    return SubmissionResponse.model_validate(submission)
+    return _serialize_submissions_with_attachments(db, [submission])[0]
 
 
 @router.patch(

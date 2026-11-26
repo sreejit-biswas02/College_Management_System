@@ -64,6 +64,8 @@ export const setSemesterActive = (id, active) =>
   apiRequest(`/admin/semesters/${id}/${active ? "activate" : "deactivate"}`, {
     method: "PATCH",
   });
+export const previewStudentSemester = (admissionYear) =>
+  apiRequest(`/admin/semesters/active-preview?admission_year=${admissionYear}`);
 
 // Courses
 export const listCourses = (params) =>

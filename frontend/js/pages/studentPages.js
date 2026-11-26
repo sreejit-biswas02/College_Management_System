@@ -31,7 +31,7 @@ async function renderStudentOverview(container) {
   container.innerHTML = `
     <section class="stats-grid">
       <div class="stat-card">
-        <div class="text-muted">Roll Number</div>
+        <div class="text-muted">Student ID</div>
         <div class="stat-value" style="font-size:1.15rem;">${escapeHtml(profile.roll_number)}</div>
       </div>
       <div class="stat-card">
@@ -70,10 +70,19 @@ async function renderStudentProfile(container) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;">
         <div><div class="text-muted">Full Name</div><strong>${escapeHtml(profile.user.full_name)}</strong></div>
         <div><div class="text-muted">Email</div><strong>${escapeHtml(profile.user.email)}</strong></div>
-        <div><div class="text-muted">Roll Number</div><strong>${escapeHtml(profile.roll_number)}</strong></div>
+        <div><div class="text-muted">Student ID</div><strong>${escapeHtml(profile.roll_number)}</strong></div>
         <div><div class="text-muted">Department</div><strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong></div>
-        <div><div class="text-muted">Semester</div><strong>Semester ${escapeHtml(profile.current_semester_number)}</strong></div>
-        <div><div class="text-muted">Admission Year</div><strong>${escapeHtml(profile.admission_year)}</strong></div>
+        <div><div class="text-muted">Semester</div><strong>${escapeHtml(
+          profile.is_completed
+            ? "Completed (8 Semesters)"
+            : profile.calculated_semester
+              ? `Semester ${profile.calculated_semester}`
+              : profile.semester_status || `Semester ${profile.current_semester_number}`
+        )}</strong></div>
+        <div><div class="text-muted">Admission Academic Year</div><strong>${escapeHtml(
+          profile.admission_academic_year ||
+            `${profile.admission_year}-${profile.admission_year + 1}`
+        )}</strong></div>
       </div>
     </section>
   `;
@@ -176,10 +185,16 @@ async function renderStudentAssignments(container) {
 
   async function load() {
     tableEl.innerHTML = renderLoading();
-    const data = await opsApi.listOfferingAssignments(select.value, {
-      page: 1,
-      page_size: 50,
-    });
+    let data;
+    try {
+      data = await opsApi.listOfferingAssignments(select.value, {
+        page: 1,
+        page_size: 50,
+      });
+    } catch (err) {
+      tableEl.innerHTML = renderErrorState(err.message || "Failed to load assignments.");
+      return;
+    }
     tableEl.innerHTML = renderDataTable({
       columns: [
         { key: "title", label: "Title" },
@@ -229,8 +244,8 @@ async function renderStudentAssignments(container) {
                 <textarea name="content" rows="3" class="form-control" placeholder="Enter your answer or notes..."></textarea>
               </div>
               <div class="form-group">
-                <label class="form-label">Upload File (optional, max 10 MB)</label>
-                <input id="stu-sub-file" type="file" accept="${ALLOWED_EXTENSIONS.join(",")}" class="form-control" />
+                <label class="form-label">Upload File(s) (optional, max 10 MB each)</label>
+                <input id="stu-sub-file" type="file" multiple accept="${ALLOWED_EXTENSIONS.join(",")}" class="form-control" />
                 <span id="stu-sub-file-info" class="text-muted"></span>
               </div>
               <div id="stu-upload-progress" class="text-muted hidden"></div>
@@ -242,16 +257,24 @@ async function renderStudentAssignments(container) {
         const fileInfo = document.getElementById("stu-sub-file-info");
         const progEl = document.getElementById("stu-upload-progress");
         fileInput?.addEventListener("change", () => {
-          const f = fileInput.files[0];
-          fileInfo.textContent = f ? `${f.name} (${formatBytes(f.size)})` : "";
+          const files = Array.from(fileInput.files || []);
+          fileInfo.textContent = files
+            .map((f) => `${f.name} (${formatBytes(f.size)})`)
+            .join(", ");
         });
 
         const formEl = document.getElementById("stu-submit-form");
         formEl?.addEventListener("submit", async (e) => {
           e.preventDefault();
           const submitBtn = formEl.querySelector('button[type="submit"]');
-          const file = fileInput.files[0];
-          if (file) {
+          const files = Array.from(fileInput.files || []);
+          const fd = Object.fromEntries(new FormData(formEl).entries());
+          const trimmedContent = (fd.content || "").trim();
+          if (!trimmedContent && files.length === 0) {
+            showToast("Please enter submission text or attach a file.", "error");
+            return;
+          }
+          for (const file of files) {
             const fileErr = validateClientFile(file, 10 * 1024 * 1024);
             if (fileErr) {
               showToast(fileErr, "error");
@@ -260,16 +283,19 @@ async function renderStudentAssignments(container) {
           }
           submitBtn.disabled = true;
           try {
-            const fd = Object.fromEntries(new FormData(formEl).entries());
             const submission = await opsApi.submitAssignment(btn.dataset.id, {
-              content: fd.content || (file ? `Attached file: ${file.name}` : null),
+              content:
+                trimmedContent ||
+                (files.length
+                  ? `Attached file(s): ${files.map((f) => f.name).join(", ")}`
+                  : null),
             });
-            if (file) {
+            for (let i = 0; i < files.length; i += 1) {
               progEl.classList.remove("hidden");
               const uploadFd = new FormData();
-              uploadFd.append("file", file);
+              uploadFd.append("file", files[i]);
               await filesApi.uploadSubmissionFile(submission.id, uploadFd, (pct) => {
-                progEl.textContent = `Uploading file: ${pct}%`;
+                progEl.textContent = `Uploading ${files[i].name} (${i + 1}/${files.length}): ${pct}%`;
               });
             }
             closeModal();
@@ -298,6 +324,11 @@ async function renderStudentSubmissions(container) {
           { key: "assignment_id", label: "Assignment ID" },
           { key: "submitted_at", label: "Submitted At" },
           {
+            label: "Attachments",
+            render: (r) =>
+              renderFileListHtml(r.attachments || [], { compact: true }),
+          },
+          {
             label: "Score",
             render: (r) =>
               r.score !== null ? escapeHtml(r.score) : renderStatusBadge("Pending", "warning"),
@@ -309,6 +340,7 @@ async function renderStudentSubmissions(container) {
       })}
     </section>
   `;
+  bindFileListActions(container);
 }
 
 async function renderStudentNotices(container) {

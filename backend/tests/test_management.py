@@ -91,7 +91,7 @@ def test_student_crud_and_duplicates(
     )
     assert create_resp.status_code == 201
     student = create_resp.json()
-    assert student["roll_number"] == "CSE-2026-001"
+    assert student["roll_number"] == f"S-{sample_department.code}-2026-001"
     assert student["user"]["email"] == "student1@example.edu"
     assert "hashed_password" not in student["user"]
 
@@ -104,14 +104,13 @@ def test_student_crud_and_duplicates(
             "full_name": "Other",
             "password": STRONG_PASSWORD,
             "department_id": sample_department.id,
-            "roll_number": "CSE-2026-002",
             "admission_year": 2026,
         },
     )
     assert dup_email.status_code == 409
 
-    # Duplicate roll number
-    dup_roll = client.post(
+    # Client-supplied roll_number is ignored; next sequential ID is generated
+    second_stu = client.post(
         "/api/v1/admin/students",
         headers=admin_headers,
         json={
@@ -119,11 +118,12 @@ def test_student_crud_and_duplicates(
             "full_name": "Other",
             "password": STRONG_PASSWORD,
             "department_id": sample_department.id,
-            "roll_number": "CSE-2026-001",
+            "roll_number": "OVERRIDE-ATTEMPT",
             "admission_year": 2026,
         },
     )
-    assert dup_roll.status_code == 409
+    assert second_stu.status_code == 201
+    assert second_stu.json()["roll_number"] == f"S-{sample_department.code}-2026-002"
 
     sid = student["id"]
     # Get by ID
@@ -164,7 +164,7 @@ def test_student_crud_and_duplicates(
     listed = client.get(
         "/api/v1/admin/students",
         headers=admin_headers,
-        params={"search": "CSE-2026-001", "semester_number": 2},
+        params={"search": student["roll_number"], "semester_number": 2},
     )
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
@@ -190,10 +190,10 @@ def test_faculty_crud_and_duplicates(
     )
     assert resp.status_code == 201
     fac = resp.json()
-    assert fac["employee_id"] == "EMP-501"
+    assert fac["employee_id"] == f"F-{sample_department.code}-001"
     assert "hashed_password" not in fac["user"]
 
-    # Duplicate email & employee_id
+    # Duplicate email rejected; client-supplied employee_id ignored for new faculty
     assert (
         client.post(
             "/api/v1/admin/faculty",
@@ -203,27 +203,25 @@ def test_faculty_crud_and_duplicates(
                 "full_name": "Dup",
                 "password": STRONG_PASSWORD,
                 "department_id": sample_department.id,
-                "employee_id": "EMP-502",
                 "designation": "Lecturer",
             },
         ).status_code
         == 409
     )
-    assert (
-        client.post(
-            "/api/v1/admin/faculty",
-            headers=admin_headers,
-            json={
-                "email": "prof2@example.edu",
-                "full_name": "Dup",
-                "password": STRONG_PASSWORD,
-                "department_id": sample_department.id,
-                "employee_id": "EMP-501",
-                "designation": "Lecturer",
-            },
-        ).status_code
-        == 409
+    second_fac = client.post(
+        "/api/v1/admin/faculty",
+        headers=admin_headers,
+        json={
+            "email": "prof2@example.edu",
+            "full_name": "Prof. Second",
+            "password": STRONG_PASSWORD,
+            "department_id": sample_department.id,
+            "employee_id": "OVERRIDE-ATTEMPT",
+            "designation": "Lecturer",
+        },
     )
+    assert second_fac.status_code == 201
+    assert second_fac.json()["employee_id"] == f"F-{sample_department.code}-002"
 
     fid = fac["id"]
     assert (
@@ -374,6 +372,186 @@ def test_semester_crud(
         ).json()["name"]
         == "Autumn 2026"
     )
+
+
+def test_indian_semester_calendar_and_relationships(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    sample_department: Department,
+) -> None:
+    """Verify odd/even Indian semesters, YYYY-YYYY validation, edit, and relations."""
+    # Odd semester without explicit name -> auto-generated "Semester 1", Odd
+    sem1_resp = client.post(
+        "/api/v1/admin/semesters",
+        headers=admin_headers,
+        json={
+            "academic_year": "2032-2033",
+            "term_number": 1,
+            "start_date": "2032-07-15",
+            "end_date": "2032-12-20",
+            "is_active": True,
+        },
+    )
+    assert sem1_resp.status_code == 201
+    sem1 = sem1_resp.json()
+    assert sem1["name"] == "Semester 1"
+    assert sem1["semester_type"] == "Odd"
+
+    # Even semester -> auto-generated "Semester 2", Even
+    sem2_resp = client.post(
+        "/api/v1/admin/semesters",
+        headers=admin_headers,
+        json={
+            "academic_year": "2032-2033",
+            "term_number": 2,
+            "start_date": "2033-01-10",
+            "end_date": "2033-05-30",
+            "is_active": False,
+        },
+    )
+    assert sem2_resp.status_code == 201
+    sem2 = sem2_resp.json()
+    assert sem2["name"] == "Semester 2"
+    assert sem2["semester_type"] == "Even"
+
+    # Same semester number (1) in a different academic year succeeds
+    next_yr_resp = client.post(
+        "/api/v1/admin/semesters",
+        headers=admin_headers,
+        json={
+            "academic_year": "2033-2034",
+            "term_number": 1,
+            "start_date": "2033-07-15",
+            "end_date": "2033-12-20",
+            "is_active": False,
+        },
+    )
+    assert next_yr_resp.status_code == 201
+    assert next_yr_resp.json()["name"] == "Semester 1"
+
+    # Duplicate semester/year rejected (409)
+    assert (
+        client.post(
+            "/api/v1/admin/semesters",
+            headers=admin_headers,
+            json={
+                "academic_year": "2032-2033",
+                "term_number": 1,
+                "start_date": "2032-08-01",
+                "end_date": "2032-12-01",
+            },
+        ).status_code
+        == 409
+    )
+
+    # Invalid academic_year formats rejected (422)
+    for bad_year in ("2026", "2026-2028", "2027-2026", "Fall-2026", "2026-27"):
+        bad_resp = client.post(
+            "/api/v1/admin/semesters",
+            headers=admin_headers,
+            json={
+                "academic_year": bad_year,
+                "term_number": 3,
+                "start_date": "2032-07-15",
+                "end_date": "2032-12-20",
+            },
+        )
+        assert bad_resp.status_code == 422
+
+    # Invalid date range rejected on create and update (422)
+    assert (
+        client.post(
+            "/api/v1/admin/semesters",
+            headers=admin_headers,
+            json={
+                "academic_year": "2032-2033",
+                "term_number": 3,
+                "start_date": "2032-12-20",
+                "end_date": "2032-07-15",
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            f"/api/v1/admin/semesters/{sem1['id']}",
+            headers=admin_headers,
+            json={"start_date": "2032-12-25", "end_date": "2032-12-01"},
+        ).status_code
+        == 422
+    )
+
+    # Create course offering + enrollment linked to sem1, then edit sem1
+    course = client.post(
+        "/api/v1/admin/courses",
+        headers=admin_headers,
+        json={
+            "department_id": sample_department.id,
+            "code": "IND101",
+            "title": "Discrete Mathematics",
+            "credits": 4,
+        },
+    ).json()
+    fac = client.post(
+        "/api/v1/admin/faculty",
+        headers=admin_headers,
+        json={
+            "email": "ind.fac@example.edu",
+            "full_name": "Prof. Indian Calendar",
+            "password": STRONG_PASSWORD,
+            "department_id": sample_department.id,
+            "designation": "Professor",
+        },
+    ).json()
+    stu = client.post(
+        "/api/v1/admin/students",
+        headers=admin_headers,
+        json={
+            "email": "ind.stu@example.edu",
+            "full_name": "Student Indian Calendar",
+            "password": STRONG_PASSWORD,
+            "department_id": sample_department.id,
+            "admission_year": 2026,
+        },
+    ).json()
+    off = client.post(
+        "/api/v1/admin/course-offerings",
+        headers=admin_headers,
+        json={
+            "course_id": course["id"],
+            "semester_id": sem1["id"],
+            "faculty_id": fac["id"],
+            "section": "A",
+        },
+    ).json()
+    enr = client.post(
+        "/api/v1/enrollments",
+        headers=admin_headers,
+        json={"student_id": stu["id"], "course_offering_id": off["id"]},
+    )
+    assert enr.status_code == 201
+
+    # Edit semester dates and term_number -> preserves offering & enrollment
+    upd = client.patch(
+        f"/api/v1/admin/semesters/{sem1['id']}",
+        headers=admin_headers,
+        json={
+            "term_number": 3,
+            "start_date": "2032-07-20",
+            "end_date": "2032-12-24",
+        },
+    )
+    assert upd.status_code == 200
+    assert upd.json()["name"] == "Semester 3"
+    assert upd.json()["semester_type"] == "Odd"
+
+    off_after = client.get(
+        f"/api/v1/admin/course-offerings/{off['id']}",
+        headers=admin_headers,
+    )
+    assert off_after.status_code == 200
+    assert off_after.json()["semester"]["name"] == "Semester 3"
+    assert off_after.json()["semester"]["semester_type"] == "Odd"
 
 
 def test_course_and_offering_crud_and_invalid_fks(
@@ -578,7 +756,7 @@ def test_course_offering_employee_id_mapping_and_validation(
         json={
             "course_id": course["id"],
             "semester_id": sem["id"],
-            "faculty_employee_id": "  EMP-OFF-1  ",
+            "faculty_employee_id": f"  {active_fac['employee_id']}  ",
             "section": "A",
             "max_capacity": 50,
         },
@@ -586,7 +764,7 @@ def test_course_offering_employee_id_mapping_and_validation(
     assert create_resp.status_code == 201
     offering = create_resp.json()
     assert offering["faculty_id"] == active_fac["id"]
-    assert offering["faculty"]["employee_id"] == "EMP-OFF-1"
+    assert offering["faculty"]["employee_id"] == active_fac["employee_id"]
 
     # Nonexistent employee_id is rejected with 404
     missing_resp = client.post(
@@ -608,7 +786,7 @@ def test_course_offering_employee_id_mapping_and_validation(
         json={
             "course_id": course["id"],
             "semester_id": sem["id"],
-            "faculty_employee_id": "EMP-OFF-99",
+            "faculty_employee_id": inactive_fac["employee_id"],
             "section": "B",
         },
     )
@@ -639,7 +817,7 @@ def test_course_offering_employee_id_mapping_and_validation(
             "course_id": course["id"],
             "semester_id": sem["id"],
             "faculty_id": active_fac["id"],
-            "faculty_employee_id": "EMP-OFF-1",
+            "faculty_employee_id": active_fac["employee_id"],
             "section": "B",
         },
     ):
@@ -654,17 +832,17 @@ def test_course_offering_employee_id_mapping_and_validation(
     patch_resp = client.patch(
         f"/api/v1/admin/course-offerings/{offering['id']}",
         headers=admin_headers,
-        json={"faculty_employee_id": "EMP-OFF-2"},
+        json={"faculty_employee_id": second_fac["employee_id"]},
     )
     assert patch_resp.status_code == 200
     assert patch_resp.json()["faculty_id"] == second_fac["id"]
-    assert patch_resp.json()["faculty"]["employee_id"] == "EMP-OFF-2"
+    assert patch_resp.json()["faculty"]["employee_id"] == second_fac["employee_id"]
 
     # Update offering to inactive faculty is rejected with 422
     bad_patch = client.patch(
         f"/api/v1/admin/course-offerings/{offering['id']}",
         headers=admin_headers,
-        json={"faculty_employee_id": "EMP-OFF-99"},
+        json={"faculty_employee_id": inactive_fac["employee_id"]},
     )
     assert bad_patch.status_code == 422
 
@@ -730,7 +908,7 @@ def test_searchable_entity_endpoints_and_mappings(
     ).json()
 
     # Student search by name, roll_number, email
-    for q in ("Aarav Search", "S-SRCH-1", "srch.stu@example.edu"):
+    for q in ("Aarav Search", stu["roll_number"], "srch.stu@example.edu"):
         r = client.get(
             "/api/v1/admin/students",
             headers=admin_headers,
@@ -740,7 +918,7 @@ def test_searchable_entity_endpoints_and_mappings(
         assert [i["id"] for i in r.json()["items"]] == [stu["id"]]
 
     # Faculty search by name, employee_id, email
-    for q in ("Search Faculty", "F-SRCH-1", "srch.fac@example.edu"):
+    for q in ("Search Faculty", fac["employee_id"], "srch.fac@example.edu"):
         r = client.get(
             "/api/v1/admin/faculty",
             headers=admin_headers,
@@ -783,7 +961,7 @@ def test_searchable_entity_endpoints_and_mappings(
     ).json()
 
     # Offering search by course code, semester name, and faculty employee_id
-    for q in ("SRCH-301", "Autumn Search", "F-SRCH-1"):
+    for q in ("SRCH-301", "Autumn Search", fac["employee_id"]):
         r = client.get(
             "/api/v1/admin/course-offerings",
             headers=admin_headers,
@@ -862,6 +1040,16 @@ def test_frontend_api_contract_and_no_manual_fk_inputs() -> None:
     assert not manual_fk_pattern.search(admin_pages_text), (
         "Manual numeric foreign-key input found in adminPages.js"
     )
+
+    # Regression: modal outside-click must account for portaled searchable dropdowns
+    # and option selection must occur on click (not mousedown hiding the target early).
+    components_dir = repo_root / "frontend" / "js" / "components"
+    modal_text = (components_dir / "modal.js").read_text(encoding="utf-8")
+    ss_text = (components_dir / "searchableSelect.js").read_text(encoding="utf-8")
+    assert "isInsideModalOrPortal" in modal_text
+    assert "data-ss-portal" in modal_text
+    assert "composedPath" in modal_text
+    assert 'btn.addEventListener("click"' in ss_text
 
 
 def test_pagination_and_role_restrictions(

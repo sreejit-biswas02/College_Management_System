@@ -1,18 +1,35 @@
 import { renderIcon } from "./icons.js";
 import { escapeHtml } from "./ui.js";
 
+let activeOnClose = null;
+let escapeListener = null;
+
 export function closeModal() {
+  document
+    .querySelectorAll("body > .searchable-select-dropdown[data-ss-portal]")
+    .forEach((el) => el.remove());
+  if (escapeListener) {
+    document.removeEventListener("keydown", escapeListener);
+    escapeListener = null;
+  }
+  const cleanup = activeOnClose;
+  activeOnClose = null;
+  if (cleanup) {
+    cleanup();
+  }
   const root = document.getElementById("modal-root");
   if (root) {
     root.innerHTML = "";
   }
 }
 
-export function openModal({ title, bodyHtml, footerHtml = "" }) {
+export function openModal({ title, bodyHtml, footerHtml = "", onClose = null }) {
   const root = document.getElementById("modal-root");
   if (!root) {
     return;
   }
+  closeModal();
+  activeOnClose = onClose;
 
   root.innerHTML = `
     <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -29,12 +46,54 @@ export function openModal({ title, bodyHtml, footerHtml = "" }) {
     </div>
   `;
 
+  const backdropEl = root.querySelector(".modal-backdrop");
+  const dialogEl = root.querySelector(".modal-dialog");
+
+  function isInsideModalOrPortal(event) {
+    const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+    const portals = Array.from(
+      document.querySelectorAll("body > .searchable-select-dropdown[data-ss-portal]")
+    );
+    const target = event.target;
+
+    if (dialogEl && (path.includes(dialogEl) || dialogEl.contains(target))) {
+      return true;
+    }
+    return portals.some(
+      (portal) => path.includes(portal) || portal.contains(target)
+    );
+  }
+
+  let pointerStartedInside = false;
+  backdropEl?.addEventListener("pointerdown", (e) => {
+    pointerStartedInside = isInsideModalOrPortal(e);
+  });
+  backdropEl?.addEventListener("mousedown", (e) => {
+    if (isInsideModalOrPortal(e)) {
+      pointerStartedInside = true;
+    }
+  });
+
   root.querySelector("#modal-close-btn")?.addEventListener("click", closeModal);
-  root.querySelector(".modal-backdrop")?.addEventListener("click", (e) => {
-    if (e.target.classList.contains("modal-backdrop")) {
+  backdropEl?.addEventListener("click", (e) => {
+    const inside = pointerStartedInside || isInsideModalOrPortal(e);
+    pointerStartedInside = false;
+    if (!inside) {
       closeModal();
     }
   });
+  escapeListener = (e) => {
+    if (e.key === "Escape") {
+      const openDropdown = document.querySelector(
+        "body > .searchable-select-dropdown[data-ss-portal]:not(.hidden)"
+      );
+      if (openDropdown) {
+        return;
+      }
+      closeModal();
+    }
+  };
+  document.addEventListener("keydown", escapeListener);
 }
 
 export function confirmDialog({ title, message, confirmLabel = "Confirm", onConfirm }) {

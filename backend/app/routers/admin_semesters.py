@@ -14,7 +14,9 @@ from app.schemas.academic import (
     SemesterUpdate,
 )
 from app.schemas.common import PaginatedResponse
+from app.schemas.student import SemesterPreviewResponse
 from app.services import academic_service
+from app.services.semester_calculator import resolve_student_semester_safe
 
 router = APIRouter(
     prefix="/admin/semesters",
@@ -60,6 +62,24 @@ def list_semesters_endpoint(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/active-preview", response_model=SemesterPreviewResponse)
+def preview_calculated_semester_endpoint(
+    db: Annotated[Session, Depends(get_db)],
+    admission_year: int = Query(..., ge=1950, le=2100),
+) -> SemesterPreviewResponse:
+    """Preview the automatically calculated semester for an admission year."""
+    calc = resolve_student_semester_safe(db, admission_year=admission_year)
+    return SemesterPreviewResponse(
+        admission_year=admission_year,
+        admission_academic_year=f"{admission_year}-{admission_year + 1}",
+        calculated_semester=calc.calculated_semester,
+        semester_status=calc.semester_status,
+        is_completed=calc.is_completed,
+        active_academic_year=calc.active_academic_year,
+        active_term_number=calc.active_term_number,
     )
 
 
