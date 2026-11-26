@@ -8,12 +8,15 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 DIST_DIR="$SCRIPT_DIR/dist"
 
 CF_PAGES_VAL="${CF_PAGES:-0}"
+VERCEL_VAL="${VERCEL:-0}"
 if [ "$CF_PAGES_VAL" = "1" ]; then
   API_URL="${API_BASE_URL:-}"
   if [ -z "$API_URL" ]; then
     echo "ERROR: API_BASE_URL must be set in Cloudflare Pages." >&2
     exit 1
   fi
+elif [ "$VERCEL_VAL" = "1" ]; then
+  API_URL="${API_BASE_URL:-/api/v1}"
 else
   if [ "${API_BASE_URL+x}" = "x" ]; then
     API_URL="$API_BASE_URL"
@@ -42,18 +45,23 @@ if any(ch.isspace() for ch in api_url) or any(
     sys.stderr.write("ERROR: API_BASE_URL contains invalid characters.\n")
     sys.exit(1)
 
-parsed = urlsplit(api_url)
-if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-    sys.stderr.write("ERROR: API_BASE_URL must be a valid HTTP(S) URL.\n")
-    sys.exit(1)
+if api_url.startswith("/"):
+    if cf_pages or not api_url.startswith("/api/"):
+        sys.stderr.write("ERROR: Relative API_BASE_URL must start with /api/ and is not valid for Cloudflare Pages.\n")
+        sys.exit(1)
+else:
+    parsed = urlsplit(api_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        sys.stderr.write("ERROR: API_BASE_URL must be a valid HTTP(S) URL.\n")
+        sys.exit(1)
 
-if parsed.username or parsed.password or parsed.fragment:
-    sys.stderr.write("ERROR: API_BASE_URL must not contain credentials or fragments.\n")
-    sys.exit(1)
+    if parsed.username or parsed.password or parsed.fragment:
+        sys.stderr.write("ERROR: API_BASE_URL must not contain credentials or fragments.\n")
+        sys.exit(1)
 
-if cf_pages and parsed.scheme != "https":
-    sys.stderr.write("ERROR: Production API_BASE_URL must use https://.\n")
-    sys.exit(1)
+    if cf_pages and parsed.scheme != "https":
+        sys.stderr.write("ERROR: Production API_BASE_URL must use https://.\n")
+        sys.exit(1)
 
 encoded_url = json.dumps(api_url)
 print("// Generated at build time by frontend/build.sh")
