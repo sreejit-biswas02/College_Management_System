@@ -89,11 +89,30 @@ def create_notice(db: Session, payload: NoticeCreate, actor: User) -> Notice:
     return _get_notice_raw(db, notice.id)
 
 
+def _notice_load_options() -> tuple:
+    return (
+        selectinload(Notice.posted_by_user),
+        selectinload(Notice.targets).selectinload(NoticeTarget.department),
+        selectinload(Notice.targets)
+        .selectinload(NoticeTarget.course_offering)
+        .selectinload(CourseOffering.course),
+        selectinload(Notice.targets)
+        .selectinload(NoticeTarget.course_offering)
+        .selectinload(CourseOffering.semester),
+        selectinload(Notice.targets)
+        .selectinload(NoticeTarget.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.user),
+        selectinload(Notice.targets)
+        .selectinload(NoticeTarget.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.department),
+    )
+
+
 def _get_notice_raw(db: Session, notice_id: int) -> Notice:
     notice = db.scalar(
-        select(Notice)
-        .options(selectinload(Notice.targets))
-        .where(Notice.id == notice_id)
+        select(Notice).options(*_notice_load_options()).where(Notice.id == notice_id)
     )
     if notice is None:
         raise NotFoundError("Notice not found.")
@@ -183,7 +202,7 @@ def list_visible_notices(
     page_size: int = 20,
 ) -> tuple[list[Notice], int]:
     """List notices visible to the authenticated user using SQL filtering."""
-    stmt = select(Notice).options(selectinload(Notice.targets))
+    stmt = select(Notice).options(*_notice_load_options())
     count_stmt = select(func.count(Notice.id))
 
     if actor.role != UserRole.ADMIN:

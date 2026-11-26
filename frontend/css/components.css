@@ -534,3 +534,56 @@
 .dropdown-item:hover {
   background-color: var(--color-surface-muted);
 }
+
+/* Read-only & Required Indicators */
+.form-control[readonly],
+.form-control[aria-readonly="true"] {
+  background-color: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.required-star {
+  color: var(--color-danger);
+  margin-left: 2px;
+}
+
+/* Dashboard & Profile Grids */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+}
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-4);
+}
+
+.profile-field {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg);
+}
+
+.profile-field-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  margin-bottom: 0.25rem;
+}
+
+.data-table td {
+  vertical-align: middle;
+}
+
+.stat-subtext {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 0.25rem;
+}

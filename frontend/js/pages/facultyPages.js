@@ -12,22 +12,32 @@ import { closeModal, confirmDialog, openModal } from "../components/modal.js";
 import { showToast } from "../components/toast.js";
 import {
   escapeHtml,
+  formatDayOfWeek,
+  formatIndianDate,
+  formatIndianDateTime,
+  formatNoticeAudience,
+  formatOfferingLabel,
+  formatTime12h,
   renderEmptyState,
   renderErrorState,
   renderLoading,
   renderStatusBadge,
 } from "../components/ui.js";
 
-function openFormModal({ title, fieldsHtml, onSubmit }) {
+function openFormModal({ title, fieldsHtml, submitLabel = "Save", onSubmit }) {
   openModal({
     title,
-    bodyHtml: `<form id="faculty-modal-form">${fieldsHtml}<button class="btn btn-primary btn-block" type="submit">Save</button></form>`,
+    bodyHtml: `<form id="faculty-modal-form">${fieldsHtml}<button class="btn btn-primary btn-block" type="submit">${escapeHtml(submitLabel)}</button></form>`,
   });
   const formEl = document.getElementById("faculty-modal-form");
   formEl?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = formEl.querySelector('button[type="submit"]');
-    btn.disabled = true;
+    const orig = btn ? btn.textContent : submitLabel;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Saving...";
+    }
     try {
       const formData = new FormData(formEl);
       await onSubmit(Object.fromEntries(formData.entries()));
@@ -35,7 +45,10 @@ function openFormModal({ title, fieldsHtml, onSubmit }) {
     } catch (err) {
       showToast(err.message || "Operation failed.", "error");
     } finally {
-      btn.disabled = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
     }
   });
 }
@@ -48,45 +61,212 @@ async function renderFacultyOverview(container) {
     opsApi.getMyTimetable(),
   ]);
 
+  const offeringItems = offerings.items || [];
+  const offeringSlice = offeringItems.slice(0, 8);
+
+  const [enrollmentCounts, assignmentLists, sessionLists] = await Promise.all([
+    Promise.all(
+      offeringSlice.map((o) =>
+        opsApi
+          .listOfferingEnrollments(o.id, { page: 1, page_size: 1 })
+          .then((res) => res.total || 0)
+          .catch(() => 0)
+      )
+    ),
+    Promise.all(
+      offeringSlice.map((o) =>
+        opsApi
+          .listOfferingAssignments(o.id, { page: 1, page_size: 10 })
+          .then((res) => res.items || [])
+          .catch(() => [])
+      )
+    ),
+    Promise.all(
+      offeringSlice.map((o) =>
+        opsApi
+          .listOfferingSessions(o.id, { page: 1, page_size: 5 })
+          .then((res) =>
+            (res.items || []).map((s) => ({ ...s, _offering: o }))
+          )
+          .catch(() => [])
+      )
+    ),
+  ]);
+
+  const totalEnrolled = enrollmentCounts.reduce((acc, n) => acc + n, 0);
+  const allAssignments = assignmentLists
+    .flat()
+    .sort((a, b) => new Date(a.due_at) - new Date(b.due_at));
+
+  const submissionCounts = await Promise.all(
+    allAssignments.slice(0, 8).map((asg) =>
+      opsApi
+        .listAssignmentSubmissions(asg.id, { page: 1, page_size: 50 })
+        .then((res) => ({
+          id: asg.id,
+          total: res.total || 0,
+          pending: (res.items || []).filter(
+            (s) => s.score === null || s.score === undefined
+          ).length,
+        }))
+        .catch(() => ({ id: asg.id, total: 0, pending: 0 }))
+    )
+  );
+  const subStatsByAsg = new Map(submissionCounts.map((s) => [s.id, s]));
+  const totalPendingSubs = submissionCounts.reduce((acc, s) => acc + s.pending, 0);
+
+  const recentSessions = sessionLists
+    .flat()
+    .sort((a, b) => String(b.session_date).localeCompare(String(a.session_date)))
+    .slice(0, 5);
+
   container.innerHTML = `
-    <section class="stats-grid">
-      <div class="stat-card">
-        <div class="text-muted">Designation</div>
-        <div class="stat-value" style="font-size:1.15rem;">${escapeHtml(profile.designation)}</div>
+    <section class="card" style="margin-bottom:1.25rem;">
+      <div class="card-header" style="margin-bottom:0.5rem;">
+        <div>
+          <h2 class="card-title">${escapeHtml(profile.user.full_name)}</h2>
+          <p class="text-muted" style="font-size:0.875rem;">
+            ${escapeHtml(profile.employee_id)} &bull;
+            ${escapeHtml(profile.designation)} &bull;
+            ${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}
+          </p>
+        </div>
+        ${renderStatusBadge(profile.user.is_active ? "Active" : "Inactive", profile.user.is_active ? "success" : "danger")}
       </div>
+    </section>
+
+    <section class="stats-grid">
       <div class="stat-card">
         <div class="text-muted">Assigned Offerings</div>
         <div class="stat-value">${escapeHtml(offerings.total)}</div>
+        <div class="stat-subtext">Active teaching courses</div>
+      </div>
+      <div class="stat-card">
+        <div class="text-muted">Enrolled Students</div>
+        <div class="stat-value">${escapeHtml(totalEnrolled)}</div>
+        <div class="stat-subtext">Across assigned offerings</div>
+      </div>
+      <div class="stat-card">
+        <div class="text-muted">Pending Evaluations</div>
+        <div class="stat-value">${escapeHtml(totalPendingSubs)}</div>
+        <div class="stat-subtext">Ungraded submissions</div>
       </div>
       <div class="stat-card">
         <div class="text-muted">Weekly Classes</div>
         <div class="stat-value">${escapeHtml(timetable.length)}</div>
-      </div>
-      <div class="stat-card">
-        <div class="text-muted">Relevant Notices</div>
-        <div class="stat-value">${escapeHtml(notices.total)}</div>
+        <div class="stat-subtext">Scheduled slots</div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-header"><h2 class="card-title">My Assigned Course Offerings</h2></div>
+    <div class="dashboard-grid">
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">My Assigned Course Offerings</h2></div>
+        ${renderDataTable({
+          columns: [
+            { label: "Course", render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`) },
+            { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
+            { key: "section", label: "Section" },
+            {
+              label: "Status",
+              render: (r) =>
+                renderStatusBadge(
+                  r.is_active ? "Active" : "Inactive",
+                  r.is_active ? "success" : "danger"
+                ),
+            },
+          ],
+          rows: offeringItems,
+          emptyTitle: "No assigned course offerings",
+          emptyDescription: "You have not been assigned to any offerings yet.",
+        })}
+      </section>
+
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Assignments &amp; Pending Grading</h2></div>
+        ${renderDataTable({
+          columns: [
+            { key: "title", label: "Assignment" },
+            {
+              label: "Course",
+              render: (r) =>
+                escapeHtml(
+                  r.course_offering?.course
+                    ? `${r.course_offering.course.code} (${r.course_offering.section})`
+                    : "—"
+                ),
+            },
+            { label: "Due", render: (r) => escapeHtml(formatIndianDateTime(r.due_at)) },
+            {
+              label: "Pending",
+              render: (r) => {
+                const st = subStatsByAsg.get(r.id);
+                if (!st) return '<span class="text-muted">—</span>';
+                return st.pending > 0
+                  ? renderStatusBadge(`${st.pending} to grade`, "warning")
+                  : renderStatusBadge(`${st.total} graded`, "success");
+              },
+            },
+          ],
+          rows: allAssignments.slice(0, 6),
+          emptyTitle: "No assignments published",
+        })}
+      </section>
+    </div>
+
+    <div class="dashboard-grid">
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Recent Attendance Sessions</h2></div>
+        ${renderDataTable({
+          columns: [
+            {
+              label: "Course",
+              render: (r) => escapeHtml(formatOfferingLabel(r._offering)),
+            },
+            {
+              label: "Date",
+              render: (r) =>
+                escapeHtml(`${formatIndianDate(r.session_date)} (#${r.session_number})`),
+            },
+            { key: "topic", label: "Topic" },
+            { label: "Marked", render: (r) => escapeHtml(r.records?.length ?? 0) },
+          ],
+          rows: recentSessions,
+          emptyTitle: "No attendance sessions recorded",
+        })}
+      </section>
+
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Weekly Timetable</h2></div>
+        ${renderDataTable({
+          columns: [
+            { label: "Day", render: (r) => escapeHtml(formatDayOfWeek(r.day_of_week)) },
+            {
+              label: "Time",
+              render: (r) =>
+                escapeHtml(`${formatTime12h(r.start_time)} – ${formatTime12h(r.end_time)}`),
+            },
+            {
+              label: "Course",
+              render: (r) => escapeHtml(formatOfferingLabel(r.course_offering)),
+            },
+            { label: "Room", render: (r) => escapeHtml(r.room || "TBA") },
+          ],
+          rows: timetable.slice(0, 6),
+          emptyTitle: "No timetable slots scheduled",
+        })}
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:1.25rem;">
+      <div class="card-header"><h2 class="card-title">Recent Notices</h2></div>
       ${renderDataTable({
         columns: [
-          { label: "Course", render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`) },
-          { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
-          { key: "section", label: "Section" },
-          {
-            label: "Status",
-            render: (r) =>
-              renderStatusBadge(
-                r.is_active ? "Active" : "Inactive",
-                r.is_active ? "success" : "danger"
-              ),
-          },
+          { key: "title", label: "Title" },
+          { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+          { label: "Published", render: (r) => escapeHtml(formatIndianDateTime(r.published_at)) },
         ],
-        rows: offerings.items,
-        emptyTitle: "No assigned course offerings",
-        emptyDescription: "You have not been assigned to any offerings yet.",
+        rows: notices.items,
+        emptyTitle: "No notices available",
       })}
     </section>
   `;
@@ -96,14 +276,39 @@ async function renderFacultyProfile(container) {
   const profile = await opsApi.getMyFacultyProfile();
   container.innerHTML = `
     <section class="card">
-      <div class="card-header"><h2 class="card-title">My Faculty Profile</h2></div>
-      <div class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;">
-        <div><div class="text-muted">Full Name</div><strong>${escapeHtml(profile.user.full_name)}</strong></div>
-        <div><div class="text-muted">Email</div><strong>${escapeHtml(profile.user.email)}</strong></div>
-        <div><div class="text-muted">Faculty ID</div><strong>${escapeHtml(profile.employee_id)}</strong></div>
-        <div><div class="text-muted">Designation</div><strong>${escapeHtml(profile.designation)}</strong></div>
-        <div><div class="text-muted">Department</div><strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong></div>
-        <div><div class="text-muted">Joining Date</div><strong>${escapeHtml(profile.joining_date || "—")}</strong></div>
+      <div class="card-header">
+        <h2 class="card-title">My Faculty Profile</h2>
+        ${renderStatusBadge(profile.user.is_active ? "Active" : "Inactive", profile.user.is_active ? "success" : "danger")}
+      </div>
+      <div class="profile-grid">
+        <div class="profile-field">
+          <div class="profile-field-label">Full Name</div>
+          <strong>${escapeHtml(profile.user.full_name)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Email</div>
+          <strong>${escapeHtml(profile.user.email)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Faculty ID</div>
+          <strong>${escapeHtml(profile.employee_id)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Designation</div>
+          <strong>${escapeHtml(profile.designation)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Department</div>
+          <strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Joining Date</div>
+          <strong>${escapeHtml(profile.joining_date ? formatIndianDate(profile.joining_date) : "Not provided")}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Phone</div>
+          <strong>${escapeHtml(profile.phone || "Not provided")}</strong>
+        </div>
       </div>
     </section>
   `;
@@ -116,14 +321,30 @@ async function renderFacultyOfferings(container) {
       <div class="card-header"><h2 class="card-title">My Course Offerings</h2></div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "Offering ID" },
-          { label: "Code", render: (r) => escapeHtml(r.course.code) },
-          { label: "Title", render: (r) => escapeHtml(r.course.title) },
-          { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
+          {
+            label: "Course",
+            render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`),
+          },
+          {
+            label: "Semester",
+            render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`),
+          },
           { key: "section", label: "Section" },
-          { key: "max_capacity", label: "Capacity" },
+          {
+            label: "Capacity",
+            render: (r) => escapeHtml(r.max_capacity ?? "Unlimited"),
+          },
+          {
+            label: "Status",
+            render: (r) =>
+              renderStatusBadge(
+                r.is_active ? "Active" : "Inactive",
+                r.is_active ? "success" : "danger"
+              ),
+          },
         ],
         rows: offerings.items,
+        emptyTitle: "No assigned course offerings",
       })}
     </section>
   `;
@@ -139,12 +360,12 @@ async function renderFacultyStudents(container) {
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">Enrolled Students</h2>
-        <select id="fac-offering-select" class="form-control" style="max-width:320px;">
+        <h2 class="card-title">Offering Students</h2>
+        <select id="fac-offering-select" class="form-control" style="max-width:360px;" aria-label="Select course offering">
           ${offerings.items
             .map(
               (o) =>
-                `<option value="${o.id}">${escapeHtml(`${o.course.code} (${o.section}) — ${o.semester.name}`)}</option>`
+                `<option value="${o.id}">${escapeHtml(`${formatOfferingLabel(o)} • ${o.semester.name}`)}</option>`
             )
             .join("")}
         </select>
@@ -165,6 +386,15 @@ async function renderFacultyStudents(container) {
           { label: "Student ID", render: (r) => escapeHtml(r.student.roll_number) },
           { label: "Name", render: (r) => escapeHtml(r.student.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.student.user.email) },
+          {
+            label: "Department",
+            render: (r) =>
+              escapeHtml(`${r.student.department.code} — ${r.student.department.name}`),
+          },
+          {
+            label: "Semester",
+            render: (r) => escapeHtml(`Semester ${r.student.current_semester_number}`),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -198,11 +428,11 @@ async function renderFacultyAttendance(container) {
       <div class="card-header">
         <h2 class="card-title">Attendance Management</h2>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-          <select id="att-offering-select" class="form-control" style="max-width:280px;">
+          <select id="att-offering-select" class="form-control" style="max-width:340px;" aria-label="Select course offering">
             ${offerings.items
               .map(
                 (o) =>
-                  `<option value="${o.id}">${escapeHtml(`${o.course.code} (${o.section})`)}</option>`
+                  `<option value="${o.id}">${escapeHtml(formatOfferingLabel(o))}</option>`
               )
               .join("")}
           </select>
@@ -228,11 +458,13 @@ async function renderFacultyAttendance(container) {
     const sessionsById = new Map(data.items.map((s) => [String(s.id), s]));
     listEl.innerHTML = renderDataTable({
       columns: [
-        { key: "id", label: "ID" },
-        { key: "session_date", label: "Date" },
-        { key: "session_number", label: "#" },
+        {
+          label: "Date",
+          render: (r) => escapeHtml(formatIndianDate(r.session_date)),
+        },
+        { label: "Session", render: (r) => escapeHtml(`Session #${r.session_number}`) },
         { key: "topic", label: "Topic" },
-        { label: "Marked", render: (r) => escapeHtml(r.records.length) },
+        { label: "Marked", render: (r) => escapeHtml(`${r.records.length} student(s)`) },
         {
           label: "Action",
           render: (r) =>
@@ -285,7 +517,7 @@ async function renderFacultyAttendance(container) {
           .join("");
 
         openModal({
-          title: `Mark Attendance (Session #${sessionId})`,
+          title: `Mark Attendance — ${formatIndianDate(session?.session_date)} (Session #${session?.session_number ?? sessionId})`,
           bodyHtml: `<form id="bulk-att-form">${rowsHtml}<button class="btn btn-primary btn-block" type="submit" style="margin-top:1rem;">Save Attendance</button></form>`,
         });
         const attForm = document.getElementById("bulk-att-form");
@@ -319,8 +551,8 @@ async function renderFacultyAttendance(container) {
     openFormModal({
       title: "Create Attendance Session",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Session Date</label><input name="session_date" type="date" value="${today}" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Session Number</label><input name="session_number" type="number" min="1" value="1" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Session Date <span class="required-star">*</span></label><input name="session_date" type="date" value="${today}" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Session Number <span class="required-star">*</span></label><input name="session_number" type="number" min="1" value="1" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Topic</label><input name="topic" class="form-control" placeholder="Lecture topic" /></div>
       `,
       onSubmit: async (form) => {
@@ -352,11 +584,11 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
       <div class="card-header">
         <h2 class="card-title">${showSubmissions ? "Submission Evaluation" : "Assignments"}</h2>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-          <select id="asg-offering-select" class="form-control" style="max-width:280px;">
+          <select id="asg-offering-select" class="form-control" style="max-width:340px;" aria-label="Select course offering">
             ${offerings.items
               .map(
                 (o) =>
-                  `<option value="${o.id}">${escapeHtml(`${o.course.code} (${o.section})`)}</option>`
+                  `<option value="${o.id}">${escapeHtml(formatOfferingLabel(o))}</option>`
               )
               .join("")}
           </select>
@@ -376,11 +608,11 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
   const asgEl = document.getElementById("asg-list");
   const subEl = document.getElementById("sub-list");
 
-  async function loadSubmissions(assignmentId) {
+  async function loadSubmissions(assignment) {
     subEl.innerHTML = renderLoading("Loading submissions...");
     let subs;
     try {
-      subs = await opsApi.listAssignmentSubmissions(assignmentId, {
+      subs = await opsApi.listAssignmentSubmissions(assignment.id, {
         page: 1,
         page_size: 50,
       });
@@ -388,24 +620,46 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
       subEl.innerHTML = renderErrorState(err.message || "Failed to load submissions.");
       return;
     }
+    const courseLabel = assignment.course_offering?.course
+      ? ` — ${assignment.course_offering.course.code} (${assignment.course_offering.section})`
+      : "";
     subEl.innerHTML = `
-      <h3 class="card-title" style="margin-bottom:0.75rem;">Submissions (Assignment #${escapeHtml(assignmentId)})</h3>
+      <h3 class="card-title" style="margin-bottom:0.75rem;">
+        Submissions: ${escapeHtml(assignment.title)}${escapeHtml(courseLabel)}
+      </h3>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
-          { key: "student_id", label: "Student ID" },
+          {
+            label: "Student",
+            render: (r) =>
+              r.student
+                ? escapeHtml(`${r.student.roll_number} — ${r.student.user.full_name}`)
+                : escapeHtml(`Student #${r.student_id}`),
+          },
+          {
+            label: "Submitted",
+            render: (r) => escapeHtml(formatIndianDateTime(r.submitted_at)),
+          },
           { key: "content", label: "Content" },
           {
             label: "Attachments",
             render: (r) =>
               renderFileListHtml(r.attachments || [], { compact: true }),
           },
-          { key: "score", label: "Score" },
+          {
+            label: "Score",
+            render: (r) =>
+              r.score !== null && r.score !== undefined
+                ? renderStatusBadge(`${r.score} / ${assignment.max_score}`, "success")
+                : renderStatusBadge("Pending", "warning"),
+          },
           { key: "feedback", label: "Feedback" },
           {
             label: "Action",
             render: (r) =>
-              `<button class="btn btn-primary btn-sm grade-sub-btn" data-id="${r.id}" type="button">Grade</button>`,
+              `<button class="btn btn-primary btn-sm grade-sub-btn" data-id="${r.id}" type="button">${
+                r.score !== null && r.score !== undefined ? "Update Grade" : "Grade"
+              }</button>`,
           },
         ],
         rows: subs.items,
@@ -415,11 +669,22 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
     bindFileListActions(subEl);
     subEl.querySelectorAll(".grade-sub-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
+        const sub = subs.items.find((item) => String(item.id) === btn.dataset.id);
+        const studentLabel = sub?.student
+          ? `${sub.student.roll_number} — ${sub.student.user.full_name}`
+          : `Submission #${btn.dataset.id}`;
         openFormModal({
-          title: `Grade Submission #${btn.dataset.id}`,
+          title: `Grade: ${studentLabel}`,
+          submitLabel: "Save Grade",
           fieldsHtml: `
-            <div class="form-group"><label class="form-label">Score</label><input name="score" type="number" step="0.5" min="0" class="form-control" required /></div>
-            <div class="form-group"><label class="form-label">Feedback</label><textarea name="feedback" rows="3" class="form-control"></textarea></div>
+            <div class="form-group">
+              <label class="form-label">Score (Max: ${escapeHtml(assignment.max_score)}) <span class="required-star">*</span></label>
+              <input name="score" type="number" step="0.5" min="0" max="${escapeHtml(assignment.max_score)}" value="${escapeHtml(sub?.score ?? "")}" class="form-control" required />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Feedback</label>
+              <textarea name="feedback" rows="3" class="form-control" placeholder="Optional feedback for the student...">${escapeHtml(sub?.feedback || "")}</textarea>
+            </div>
           `,
           onSubmit: async (form) => {
             await opsApi.gradeSubmission(btn.dataset.id, {
@@ -427,7 +692,7 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
               feedback: form.feedback || null,
             });
             showToast("Submission graded.", "success");
-            loadSubmissions(assignmentId);
+            loadSubmissions(assignment);
           },
         });
       });
@@ -447,14 +712,23 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
       asgEl.innerHTML = renderErrorState(err.message || "Failed to load assignments.");
       return;
     }
+    const asgById = new Map(data.items.map((a) => [String(a.id), a]));
     asgEl.innerHTML = renderDataTable({
       columns: [
-        { key: "id", label: "ID" },
         { key: "title", label: "Title" },
-        { key: "due_at", label: "Due At" },
+        {
+          label: "Course",
+          render: (r) =>
+            escapeHtml(
+              r.course_offering?.course
+                ? `${r.course_offering.course.code} (${r.course_offering.section})`
+                : "—"
+            ),
+        },
+        { label: "Due At", render: (r) => escapeHtml(formatIndianDateTime(r.due_at)) },
         { key: "max_score", label: "Max Score" },
         {
-          label: "Attachments",
+          label: "Materials",
           render: (r) =>
             `<button class="btn btn-outline btn-sm manage-files-btn" data-id="${r.id}" data-title="${escapeHtml(r.title)}" type="button">Files</button>`,
         },
@@ -528,10 +802,13 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
     });
 
     asgEl.querySelectorAll(".view-subs-btn").forEach((btn) => {
-      btn.addEventListener("click", () => loadSubmissions(btn.dataset.id));
+      btn.addEventListener("click", () => {
+        const asg = asgById.get(btn.dataset.id);
+        if (asg) loadSubmissions(asg);
+      });
     });
     if (showSubmissions && data.items[0]) {
-      loadSubmissions(data.items[0].id);
+      loadSubmissions(data.items[0]);
     }
   }
 
@@ -540,10 +817,10 @@ async function renderFacultyAssignments(container, showSubmissions = false) {
     openFormModal({
       title: "Publish Assignment",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Title</label><input name="title" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Title <span class="required-star">*</span></label><input name="title" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Description</label><textarea name="description" rows="2" class="form-control"></textarea></div>
-        <div class="form-group"><label class="form-label">Due Date &amp; Time</label><input name="due_at" type="datetime-local" value="${due}" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Max Score</label><input name="max_score" type="number" value="100" min="1" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Due Date &amp; Time <span class="required-star">*</span></label><input name="due_at" type="datetime-local" value="${due}" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Max Score <span class="required-star">*</span></label><input name="max_score" type="number" value="100" min="1" class="form-control" required /></div>
       `,
       onSubmit: async (form) => {
         await opsApi.createAssignment({
@@ -583,6 +860,15 @@ async function renderFacultyNotices(container) {
         columns: [
           { key: "title", label: "Title" },
           { key: "body", label: "Message" },
+          { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+          {
+            label: "Published By",
+            render: (r) => escapeHtml(r.posted_by_user?.full_name || "Administration"),
+          },
+          {
+            label: "Published",
+            render: (r) => escapeHtml(formatIndianDateTime(r.published_at)),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -600,6 +886,7 @@ async function renderFacultyNotices(container) {
           },
         ],
         rows: notices.items,
+        emptyTitle: "No notices available",
       })}
     </section>
   `;
@@ -626,18 +913,18 @@ async function renderFacultyNotices(container) {
     openFormModal({
       title: "Publish Course Notice",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Course Offering</label>
+        <div class="form-group"><label class="form-label">Course Offering <span class="required-star">*</span></label>
           <select name="course_offering_id" class="form-control">
             ${offerings.items
               .map(
                 (o) =>
-                  `<option value="${o.id}">${escapeHtml(`${o.course.code} (${o.section})`)}</option>`
+                  `<option value="${o.id}">${escapeHtml(formatOfferingLabel(o))}</option>`
               )
               .join("")}
           </select>
         </div>
-        <div class="form-group"><label class="form-label">Title</label><input name="title" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Body</label><textarea name="body" rows="3" class="form-control" required></textarea></div>
+        <div class="form-group"><label class="form-label">Title <span class="required-star">*</span></label><input name="title" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Body <span class="required-star">*</span></label><textarea name="body" rows="3" class="form-control" required></textarea></div>
       `,
       onSubmit: async (form) => {
         await opsApi.createNotice({
@@ -659,11 +946,26 @@ async function renderFacultyTimetable(container) {
       <div class="card-header"><h2 class="card-title">My Weekly Timetable</h2></div>
       ${renderDataTable({
         columns: [
-          { key: "day_of_week", label: "Day" },
-          { key: "start_time", label: "Start" },
-          { key: "end_time", label: "End" },
-          { key: "course_offering_id", label: "Offering ID" },
-          { key: "room", label: "Room" },
+          { label: "Day", render: (r) => escapeHtml(formatDayOfWeek(r.day_of_week)) },
+          {
+            label: "Time",
+            render: (r) =>
+              escapeHtml(`${formatTime12h(r.start_time)} – ${formatTime12h(r.end_time)}`),
+          },
+          {
+            label: "Course",
+            render: (r) => escapeHtml(formatOfferingLabel(r.course_offering, "Not assigned")),
+          },
+          {
+            label: "Semester",
+            render: (r) =>
+              escapeHtml(
+                r.course_offering?.semester
+                  ? `${r.course_offering.semester.name} (${r.course_offering.semester.academic_year})`
+                  : "—"
+              ),
+          },
+          { label: "Room", render: (r) => escapeHtml(r.room || "TBA") },
         ],
         rows: slots,
         emptyTitle: "No timetable slots scheduled",

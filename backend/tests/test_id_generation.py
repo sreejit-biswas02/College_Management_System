@@ -107,20 +107,20 @@ def test_student_and_faculty_id_generation_sequences(
     assert s2.status_code == 201
     assert s2.json()["roll_number"] == "S-CSID-2026-002"
 
-    # Different admission year (CSID 2027) -> starts at 001
+    # Different admission year (CSID 2025) -> starts at 001
     s_next_year = client.post(
         "/api/v1/admin/students",
         headers=admin_headers,
         json={
-            "email": "s.cs.27.1@example.edu",
-            "full_name": "CS Student 2027",
+            "email": "s.cs.25.1@example.edu",
+            "full_name": "CS Student 2025",
             "password": STRONG_PASSWORD,
             "department_id": dept_cs.id,
-            "admission_year": 2027,
+            "admission_year": 2025,
         },
     )
     assert s_next_year.status_code == 201
-    assert s_next_year.json()["roll_number"] == "S-CSID-2027-001"
+    assert s_next_year.json()["roll_number"] == "S-CSID-2025-001"
 
     # Different department (ECID 2026) -> starts at 001
     s_ec = client.post(
@@ -291,7 +291,7 @@ def test_concurrent_student_and_faculty_id_generation() -> None:
                         full_name=f"Concurrent Student {idx}",
                         password=STRONG_PASSWORD,
                         department_id=dept_id,
-                        admission_year=2028,
+                        admission_year=2025,
                     ),
                 )
                 created_user_ids.append(stu.user_id)
@@ -321,7 +321,7 @@ def test_concurrent_student_and_faculty_id_generation() -> None:
             student_ids = list(pool.map(_make_student, range(5)))
             faculty_ids = list(pool.map(_make_faculty, range(5)))
 
-        assert sorted(student_ids) == [f"S-CONCID-2028-{i:03d}" for i in range(1, 6)]
+        assert sorted(student_ids) == [f"S-CONCID-2025-{i:03d}" for i in range(1, 6)]
         assert sorted(faculty_ids) == [f"F-CONCID-{i:03d}" for i in range(1, 6)]
     finally:
         if created_user_ids:
@@ -334,7 +334,7 @@ def test_concurrent_student_and_faculty_id_generation() -> None:
             setup_db.execute(delete(User).where(User.id.in_(created_user_ids)))
         setup_db.execute(
             delete(IDSequence).where(
-                IDSequence.scope_key.in_(["CONCID:2028", "CONCID"])
+                IDSequence.scope_key.in_(["CONCID:2025", "CONCID"])
             )
         )
         if dept_id is not None:

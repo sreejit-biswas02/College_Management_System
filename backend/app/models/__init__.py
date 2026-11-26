@@ -6,6 +6,7 @@ from app.models.attendance import AttendanceRecord, AttendanceSession, Attendanc
 from app.models.course_offering import CourseOffering, Enrollment, EnrollmentStatus
 from app.models.id_sequence import IDSequence
 from app.models.notice import Notice, NoticeTarget
+from app.models.semester_promotion import SemesterPromotionLog
 from app.models.stored_file import StoredFile
 from app.models.timetable import DayOfWeek, TimetableSlot
 from app.models.user import Faculty, Student, User, UserRole
@@ -26,6 +27,7 @@ __all__ = [
     "Notice",
     "NoticeTarget",
     "Semester",
+    "SemesterPromotionLog",
     "StoredFile",
     "Student",
     "Submission",

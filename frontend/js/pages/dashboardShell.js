@@ -3,9 +3,9 @@ import { renderNavbar } from "../components/navbar.js";
 import { renderSidebar } from "../components/sidebar.js";
 import { showToast } from "../components/toast.js";
 import { ROLE_NAVIGATION, ROLES } from "../config.js";
-import { renderAdminPage } from "./adminPages.js?v=3";
-import { renderFacultyPage } from "./facultyPages.js";
-import { renderStudentPage } from "./studentPages.js";
+import { renderAdminPage } from "./adminPages.js?v=5";
+import { renderFacultyPage } from "./facultyPages.js?v=5";
+import { renderStudentPage } from "./studentPages.js?v=5";
 
 const shellState = {
   collapsed: false,

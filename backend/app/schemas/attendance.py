@@ -5,6 +5,7 @@ from datetime import date, datetime, time
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.attendance import AttendanceStatus
+from app.schemas.course_offering import CourseOfferingResponse
 
 
 class AttendanceRecordInput(BaseModel):
@@ -32,6 +33,20 @@ class AttendanceBulkMarkRequest(BaseModel):
     records: list[AttendanceRecordInput] = Field(min_length=1)
 
 
+class AttendanceSessionSummary(BaseModel):
+    """Compact attendance session representation for student record responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    course_offering_id: int
+    session_date: date
+    session_number: int
+    start_time: time | None
+    topic: str | None
+    course_offering: CourseOfferingResponse | None = None
+
+
 class AttendanceRecordResponse(BaseModel):
     """Attendance record response."""
 
@@ -43,6 +58,7 @@ class AttendanceRecordResponse(BaseModel):
     status: AttendanceStatus
     remarks: str | None
     marked_at: datetime
+    session: AttendanceSessionSummary | None = None
 
 
 class AttendanceSessionResponse(BaseModel):
@@ -58,6 +74,7 @@ class AttendanceSessionResponse(BaseModel):
     start_time: time | None
     topic: str | None
     created_at: datetime
+    course_offering: CourseOfferingResponse | None = None
     records: list[AttendanceRecordResponse] = Field(default_factory=list)
 
 

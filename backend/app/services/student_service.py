@@ -7,8 +7,13 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.security import hash_password
 from app.models.academic import Department
+from app.models.semester_promotion import SemesterPromotionLog
 from app.models.user import Student, User, UserRole
-from app.schemas.student import AdminStudentCreate, AdminStudentUpdate
+from app.schemas.student import (
+    AdminStudentCreate,
+    AdminStudentUpdate,
+    PromotionBreakdownItem,
+)
 from app.services.exceptions import (
     BusinessRuleError,
     ConflictError,
@@ -16,22 +21,27 @@ from app.services.exceptions import (
     commit_or_conflict,
 )
 from app.services.id_generator import generate_student_id
-from app.services.semester_calculator import resolve_student_semester_safe
+from app.services.semester_calculator import (
+    PROGRAMME_MAX_SEMESTERS,
+    calculate_student_semester,
+    get_current_academic_year_start,
+)
 
 
 def _attach_calculated_semester(db: Session, students: list[Student]) -> None:
-    """Attach live calculated semester metadata from the active academic calendar."""
+    """Attach stored semester status and active academic year without overwriting."""
+    if not students:
+        return
+    start_year = get_current_academic_year_start(db)
+    active_year = f"{start_year}-{start_year + 1}"
     for student in students:
-        calc = resolve_student_semester_safe(
-            db,
-            admission_year=student.admission_year,
+        sem = student.current_semester_number
+        student.calculated_semester = sem
+        student.is_completed = sem > PROGRAMME_MAX_SEMESTERS
+        student.semester_status = (
+            "Completed" if sem > PROGRAMME_MAX_SEMESTERS else "In Progress"
         )
-        student.calculated_semester = calc.calculated_semester
-        student.semester_status = calc.semester_status
-        student.is_completed = calc.is_completed
-        student.active_academic_year = calc.active_academic_year
-        if calc.calculated_semester is not None:
-            student.current_semester_number = calc.calculated_semester
+        student.active_academic_year = active_year
 
 
 def _student_query():
@@ -59,11 +69,7 @@ def create_student(db: Session, payload: AdminStudentCreate) -> Student:
         raise ConflictError("Email is already registered.")
 
     department = _get_department_or_404(db, payload.department_id)
-    calc = resolve_student_semester_safe(db, admission_year=payload.admission_year)
-    if calc.semester_status == "Invalid Admission Year":
-        raise BusinessRuleError(
-            "Admission academic year cannot be later than the active academic year."
-        )
+    calc = calculate_student_semester(db, admission_year=payload.admission_year)
     roll_number = generate_student_id(
         db,
         department_code=department.code,
@@ -82,11 +88,7 @@ def create_student(db: Session, payload: AdminStudentCreate) -> Student:
         department_id=payload.department_id,
         roll_number=roll_number,
         admission_year=payload.admission_year,
-        current_semester_number=(
-            calc.calculated_semester
-            if calc.calculated_semester is not None
-            else payload.current_semester_number
-        ),
+        current_semester_number=calc.calculated_semester or 1,
         phone=payload.phone.strip() if payload.phone else None,
         date_of_birth=payload.date_of_birth,
     )
@@ -189,18 +191,13 @@ def update_student(
         target_department = _get_department_or_404(db, payload.department_id)
         student.department_id = target_department.id
 
-    if payload.admission_year is not None:
+    if (
+        payload.admission_year is not None
+        and payload.admission_year != student.admission_year
+    ):
         student.admission_year = payload.admission_year
-
-    calc = resolve_student_semester_safe(db, admission_year=student.admission_year)
-    if calc.semester_status == "Invalid Admission Year":
-        raise BusinessRuleError(
-            "Admission academic year cannot be later than the active academic year."
-        )
-    if calc.calculated_semester is not None:
-        student.current_semester_number = calc.calculated_semester
-    elif payload.current_semester_number is not None:
-        student.current_semester_number = payload.current_semester_number
+        calc = calculate_student_semester(db, admission_year=student.admission_year)
+        student.current_semester_number = calc.calculated_semester or 1
 
     if payload.recalculate_id:
         student.roll_number = generate_student_id(
@@ -281,3 +278,214 @@ def restore_student(db: Session, student_id: int) -> Student:
     student.archived_by_user_id = None
     db.commit()
     return get_student_by_id(db, student.id)
+
+
+def _eligible_odd_semester_students(
+    db: Session,
+    *,
+    academic_year: str,
+) -> tuple[list[Student], int, int]:
+    """Return eligible active odd-semester students and skipped/logged counts."""
+    already_promoted_ids = select(SemesterPromotionLog.student_id).where(
+        SemesterPromotionLog.academic_year == academic_year
+    )
+    already_promoted_count = (
+        db.scalar(
+            select(func.count(SemesterPromotionLog.id)).where(
+                SemesterPromotionLog.academic_year == academic_year
+            )
+        )
+        or 0
+    )
+
+    eligible = list(
+        db.scalars(
+            select(Student)
+            .join(Student.user)
+            .where(
+                Student.is_archived.is_(False),
+                User.is_active.is_(True),
+                Student.current_semester_number.in_([1, 3, 5, 7]),
+                Student.id.not_in(already_promoted_ids),
+            )
+            .order_by(Student.current_semester_number.asc(), Student.id.asc())
+        ).all()
+    )
+
+    inactive_skipped = (
+        db.scalar(
+            select(func.count(Student.id))
+            .join(Student.user)
+            .where(
+                Student.is_archived.is_(False),
+                User.is_active.is_(False),
+                Student.current_semester_number.in_([1, 3, 5, 7]),
+            )
+        )
+        or 0
+    )
+    return eligible, inactive_skipped, already_promoted_count
+
+
+def get_semester_promotion_preview(db: Session) -> dict[str, object]:
+    """Build a preview of eligible active odd-semester students for promotion."""
+    start_year = get_current_academic_year_start(db)
+    academic_year = f"{start_year}-{start_year + 1}"
+    eligible, inactive_skipped, already_promoted = _eligible_odd_semester_students(
+        db,
+        academic_year=academic_year,
+    )
+    counts_by_sem: dict[int, int] = {}
+    for stu in eligible:
+        counts_by_sem[stu.current_semester_number] = (
+            counts_by_sem.get(stu.current_semester_number, 0) + 1
+        )
+    breakdown = [
+        PromotionBreakdownItem(
+            old_semester=sem,
+            new_semester=sem + 1,
+            count=count,
+        )
+        for sem, count in sorted(counts_by_sem.items())
+    ]
+    return {
+        "academic_year": academic_year,
+        "eligible_count": len(eligible),
+        "inactive_skipped_count": inactive_skipped,
+        "already_promoted_count": already_promoted,
+        "can_promote": len(eligible) > 0,
+        "breakdown": breakdown,
+    }
+
+
+def promote_students_to_next_semester(
+    db: Session,
+    *,
+    actor: User,
+) -> tuple[str, int]:
+    """Promote eligible active odd-semester students to the next even semester."""
+    start_year = get_current_academic_year_start(db)
+    academic_year = f"{start_year}-{start_year + 1}"
+    eligible, _inactive_skipped, already_promoted = _eligible_odd_semester_students(
+        db,
+        academic_year=academic_year,
+    )
+    if not eligible:
+        if already_promoted > 0:
+            raise ConflictError(
+                f"Semester promotion for {academic_year} has already been performed."
+            )
+        raise BusinessRuleError(
+            "No eligible active students in odd semesters to promote."
+        )
+
+    for stu in eligible:
+        old_sem = stu.current_semester_number
+        new_sem = old_sem + 1
+        stu.current_semester_number = new_sem
+        db.add(
+            SemesterPromotionLog(
+                academic_year=academic_year,
+                student_id=stu.id,
+                old_semester=old_sem,
+                new_semester=new_sem,
+                promoted_by_user_id=actor.id,
+            )
+        )
+
+    commit_or_conflict(
+        db,
+        f"Semester promotion for {academic_year} conflicts with an existing promotion.",
+    )
+    return academic_year, len(eligible)
+
+
+def get_admin_dashboard_summary(db: Session) -> dict[str, int | float]:
+    """Return institutional summary counts for the Admin dashboard."""
+    from app.models.academic import Course, Department
+    from app.models.assignment import Assignment, Submission
+    from app.models.attendance import (
+        AttendanceRecord,
+        AttendanceSession,
+        AttendanceStatus,
+    )
+    from app.models.course_offering import CourseOffering, Enrollment, EnrollmentStatus
+    from app.models.user import Faculty
+
+    total_students = (
+        db.scalar(select(func.count(Student.id)).where(Student.is_archived.is_(False)))
+        or 0
+    )
+    active_students = (
+        db.scalar(
+            select(func.count(Student.id))
+            .join(Student.user)
+            .where(Student.is_archived.is_(False), User.is_active.is_(True))
+        )
+        or 0
+    )
+    total_faculty = db.scalar(select(func.count(Faculty.id))) or 0
+    total_departments = (
+        db.scalar(
+            select(func.count(Department.id)).where(Department.is_active.is_(True))
+        )
+        or 0
+    )
+    active_courses = db.scalar(select(func.count(Course.id))) or 0
+    active_offerings = (
+        db.scalar(
+            select(func.count(CourseOffering.id)).where(
+                CourseOffering.is_active.is_(True)
+            )
+        )
+        or 0
+    )
+    total_enrollments = (
+        db.scalar(
+            select(func.count(Enrollment.id)).where(
+                Enrollment.status == EnrollmentStatus.ENROLLED
+            )
+        )
+        or 0
+    )
+    total_attendance_sessions = db.scalar(select(func.count(AttendanceSession.id))) or 0
+    total_attendance_records = db.scalar(select(func.count(AttendanceRecord.id))) or 0
+    attended_records = (
+        db.scalar(
+            select(func.count(AttendanceRecord.id)).where(
+                AttendanceRecord.status.in_(
+                    [
+                        AttendanceStatus.PRESENT,
+                        AttendanceStatus.LATE,
+                        AttendanceStatus.EXCUSED,
+                    ]
+                )
+            )
+        )
+        or 0
+    )
+    attendance_rate = (
+        round((attended_records / total_attendance_records) * 100, 1)
+        if total_attendance_records > 0
+        else 0.0
+    )
+    total_assignments = db.scalar(select(func.count(Assignment.id))) or 0
+    pending_submissions = (
+        db.scalar(select(func.count(Submission.id)).where(Submission.score.is_(None)))
+        or 0
+    )
+
+    return {
+        "total_students": int(total_students),
+        "active_students": int(active_students),
+        "total_faculty": int(total_faculty),
+        "total_departments": int(total_departments),
+        "active_courses": int(active_courses),
+        "active_offerings": int(active_offerings),
+        "total_enrollments": int(total_enrollments),
+        "total_attendance_sessions": int(total_attendance_sessions),
+        "total_attendance_records": int(total_attendance_records),
+        "attendance_rate_percentage": attendance_rate,
+        "pending_submissions": int(pending_submissions),
+        "total_assignments": int(total_assignments),
+    }

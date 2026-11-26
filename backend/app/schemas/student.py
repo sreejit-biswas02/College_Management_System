@@ -101,8 +101,52 @@ class SemesterPreviewResponse(BaseModel):
     active_term_number: int | None
 
 
+class PromotionBreakdownItem(BaseModel):
+    """Count of students moving from an odd semester to the next even semester."""
+
+    old_semester: int
+    new_semester: int
+    count: int
+
+
+class SemesterPromotionPreviewResponse(BaseModel):
+    """Preview summary before executing odd-to-even semester promotion."""
+
+    academic_year: str
+    eligible_count: int
+    inactive_skipped_count: int
+    already_promoted_count: int
+    can_promote: bool
+    breakdown: list[PromotionBreakdownItem]
+
+
+class SemesterPromotionResultResponse(BaseModel):
+    """Result returned after executing odd-to-even semester promotion."""
+
+    academic_year: str
+    promoted_count: int
+    message: str
+
+
 class StudentArchiveResponse(BaseModel):
     """Response returned after archiving a student."""
 
     message: str
     student: StudentDetailResponse
+
+
+class AdminDashboardSummaryResponse(BaseModel):
+    """Aggregated institutional metrics for the Admin dashboard."""
+
+    total_students: int
+    active_students: int
+    total_faculty: int
+    total_departments: int
+    active_courses: int
+    active_offerings: int
+    total_enrollments: int
+    total_attendance_sessions: int
+    total_attendance_records: int
+    attendance_rate_percentage: float
+    pending_submissions: int
+    total_assignments: int

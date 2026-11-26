@@ -5,7 +5,9 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.course_offering import CourseOfferingResponse
 from app.schemas.file import StoredFileResponse
+from app.schemas.student import StudentDetailResponse
 
 
 class AssignmentCreate(BaseModel):
@@ -41,6 +43,20 @@ class AssignmentResponse(BaseModel):
     max_score: Decimal
     created_at: datetime
     updated_at: datetime
+    course_offering: CourseOfferingResponse | None = None
+
+
+class AssignmentSummary(BaseModel):
+    """Compact assignment representation for nested submission responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    course_offering_id: int
+    title: str
+    due_at: datetime
+    max_score: Decimal
+    course_offering: CourseOfferingResponse | None = None
 
 
 class SubmissionCreate(BaseModel):
@@ -94,4 +110,6 @@ class SubmissionResponse(BaseModel):
     feedback: str | None
     graded_at: datetime | None
     graded_by_faculty_id: int | None
+    student: StudentDetailResponse | None = None
+    assignment: AssignmentSummary | None = None
     attachments: list[StoredFileResponse] = Field(default_factory=list)

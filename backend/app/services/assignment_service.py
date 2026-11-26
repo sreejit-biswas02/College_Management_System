@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.assignment import Assignment, Submission
 from app.models.course_offering import CourseOffering, Enrollment, EnrollmentStatus
@@ -146,7 +146,24 @@ def list_assignments_for_offering(
     """List assignments for an offering (Admin, assigned Faculty, enrolled Student)."""
     _authorize_offering_viewer(db, offering_id, actor)
 
-    stmt = select(Assignment).where(Assignment.course_offering_id == offering_id)
+    stmt = (
+        select(Assignment)
+        .options(
+            selectinload(Assignment.course_offering).selectinload(
+                CourseOffering.course
+            ),
+            selectinload(Assignment.course_offering).selectinload(
+                CourseOffering.semester
+            ),
+            selectinload(Assignment.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.user),
+            selectinload(Assignment.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.department),
+        )
+        .where(Assignment.course_offering_id == offering_id)
+    )
     count_stmt = select(func.count(Assignment.id)).where(
         Assignment.course_offering_id == offering_id
     )
@@ -215,6 +232,27 @@ def submit_assignment(
     return submission
 
 
+def _submission_load_options() -> tuple:
+    return (
+        selectinload(Submission.student).selectinload(Student.user),
+        selectinload(Submission.student).selectinload(Student.department),
+        selectinload(Submission.assignment)
+        .selectinload(Assignment.course_offering)
+        .selectinload(CourseOffering.course),
+        selectinload(Submission.assignment)
+        .selectinload(Assignment.course_offering)
+        .selectinload(CourseOffering.semester),
+        selectinload(Submission.assignment)
+        .selectinload(Assignment.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.user),
+        selectinload(Submission.assignment)
+        .selectinload(Assignment.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.department),
+    )
+
+
 def list_submissions(
     db: Session,
     assignment_id: int,
@@ -229,7 +267,11 @@ def list_submissions(
         raise NotFoundError("Assignment not found.")
     _authorize_offering_instructor(db, assignment.course_offering_id, actor)
 
-    stmt = select(Submission).where(Submission.assignment_id == assignment_id)
+    stmt = (
+        select(Submission)
+        .options(*_submission_load_options())
+        .where(Submission.assignment_id == assignment_id)
+    )
     count_stmt = select(func.count(Submission.id)).where(
         Submission.assignment_id == assignment_id
     )
@@ -324,7 +366,11 @@ def list_my_submissions(
     if student is None:
         raise NotFoundError("Student profile not found.")
 
-    stmt = select(Submission).where(Submission.student_id == student.id)
+    stmt = (
+        select(Submission)
+        .options(*_submission_load_options())
+        .where(Submission.student_id == student.id)
+    )
     count_stmt = select(func.count(Submission.id)).where(
         Submission.student_id == student.id
     )

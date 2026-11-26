@@ -10,8 +10,11 @@ from app.dependencies.permissions import require_roles
 from app.models.user import User, UserRole
 from app.schemas.common import PaginatedResponse
 from app.schemas.student import (
+    AdminDashboardSummaryResponse,
     AdminStudentCreate,
     AdminStudentUpdate,
+    SemesterPromotionPreviewResponse,
+    SemesterPromotionResultResponse,
     StudentArchiveResponse,
     StudentDetailResponse,
 )
@@ -65,6 +68,42 @@ def list_students_endpoint(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/dashboard-summary", response_model=AdminDashboardSummaryResponse)
+def admin_dashboard_summary_endpoint(
+    db: Annotated[Session, Depends(get_db)],
+) -> AdminDashboardSummaryResponse:
+    """Return institutional summary counts for the Admin dashboard."""
+    return student_service.get_admin_dashboard_summary(db)
+
+
+@router.get("/promotion-preview", response_model=SemesterPromotionPreviewResponse)
+def preview_semester_promotion_endpoint(
+    db: Annotated[Session, Depends(get_db)],
+) -> SemesterPromotionPreviewResponse:
+    """Preview eligible active students for odd-to-even semester promotion."""
+    return student_service.get_semester_promotion_preview(db)
+
+
+@router.post("/promote-semester", response_model=SemesterPromotionResultResponse)
+def promote_students_semester_endpoint(
+    current_admin: Annotated[User, Depends(require_roles(UserRole.ADMIN))],
+    db: Annotated[Session, Depends(get_db)],
+) -> SemesterPromotionResultResponse:
+    """Promote eligible active odd-semester students to the next even semester."""
+    academic_year, promoted_count = student_service.promote_students_to_next_semester(
+        db,
+        actor=current_admin,
+    )
+    return SemesterPromotionResultResponse(
+        academic_year=academic_year,
+        promoted_count=promoted_count,
+        message=(
+            f"Promoted {promoted_count} active student(s) to the next even semester "
+            f"for {academic_year}."
+        ),
     )
 
 

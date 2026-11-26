@@ -1,7 +1,8 @@
-"""Automatic student semester calculation from the active academic calendar."""
+"""Automatic student semester calculation from admission academic year."""
 
 import re
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +16,7 @@ _YEAR_PREFIX_RE = re.compile(r"^(\d{4})-(\d{4})$")
 
 @dataclass(frozen=True)
 class SemesterCalculationResult:
-    """Computed semester state for a student based on the active calendar."""
+    """Computed semester state for a student based on admission academic year."""
 
     calculated_semester: int | None
     semester_status: str
@@ -29,85 +30,79 @@ def parse_academic_year_start(academic_year: str) -> int:
     match = _YEAR_PREFIX_RE.match(academic_year.strip())
     if not match:
         raise BusinessRuleError(
-            "Active semester has an invalid academic year format; expected YYYY-YYYY."
+            "Academic year must follow YYYY-YYYY format (e.g. 2026-2027)."
         )
     start_year, end_year = int(match.group(1)), int(match.group(2))
     if end_year != start_year + 1:
         raise BusinessRuleError(
-            "Active semester academic year must use consecutive years (YYYY-YYYY)."
+            "Academic year must use consecutive years (e.g. 2026-2027)."
         )
     return start_year
 
 
-def get_single_active_semester(db: Session) -> Semester:
-    """Return the active academic calendar session or raise if missing/ambiguous.
+def get_current_academic_year_start(
+    db: Session,
+    *,
+    reference_date: date | None = None,
+) -> int:
+    """Resolve current Indian academic year start year without requiring calendar setup.
 
-    Multiple active semesters are allowed when they belong to the same
-    (academic_year, odd/even parity) — for example Semester 1, 3, and 5 all
-    running concurrently in 2026-2027 Odd. Only conflicting academic years or
-    mixed Odd/Even active semesters are treated as ambiguous.
+    If active semesters exist in the database and agree on a single academic_year,
+    that academic_year is used; otherwise the Indian July-June academic year is
+    derived from ``reference_date`` (or today's date).
     """
-    active_semesters = list(
-        db.scalars(
-            select(Semester)
-            .where(Semester.is_active.is_(True))
-            .order_by(Semester.term_number.asc(), Semester.id.asc())
+    active_years = {
+        sem.academic_year
+        for sem in db.scalars(
+            select(Semester).where(Semester.is_active.is_(True))
         ).all()
-    )
-    if not active_semesters:
-        raise BusinessRuleError(
-            "No active semester is configured in the academic calendar."
-        )
-    distinct_sessions = {
-        (s.academic_year, 1 if s.term_number % 2 == 1 else 2) for s in active_semesters
     }
-    if len(distinct_sessions) > 1:
-        raise BusinessRuleError(
-            "Multiple active semesters across different academic years/terms are "
-            "configured; academic calendar is ambiguous."
-        )
-    return active_semesters[0]
+    if len(active_years) == 1:
+        return parse_academic_year_start(next(iter(active_years)))
+
+    today = reference_date or date.today()
+    return today.year if today.month >= 7 else today.year - 1
 
 
 def calculate_student_semester(
     db: Session,
     *,
     admission_year: int,
+    reference_date: date | None = None,
     max_semesters: int = PROGRAMME_MAX_SEMESTERS,
 ) -> SemesterCalculationResult:
-    """Calculate student's current semester from admission year and active term."""
+    """Calculate the initial odd semester: 1 + 2 * (current_year - admission_year)."""
     if admission_year < 1950 or admission_year > 2100:
         raise BusinessRuleError("Admission year must be between 1950 and 2100.")
 
-    active_sem = get_single_active_semester(db)
-    current_start_year = parse_academic_year_start(active_sem.academic_year)
+    current_start_year = get_current_academic_year_start(
+        db,
+        reference_date=reference_date,
+    )
+    current_academic_year = f"{current_start_year}-{current_start_year + 1}"
 
     year_diff = current_start_year - admission_year
     if year_diff < 0:
         raise BusinessRuleError(
-            "Admission academic year cannot be later than the active academic year."
+            "Admission academic year cannot be later than the current academic year."
         )
 
-    term_parity = 1 if active_sem.term_number % 2 == 1 else 2
-    raw_semester = (year_diff * 2) + term_parity
-    if raw_semester < 1:
-        raise BusinessRuleError("Calculated semester cannot be less than 1.")
-
+    raw_semester = 1 + (2 * year_diff)
     if raw_semester > max_semesters:
         return SemesterCalculationResult(
             calculated_semester=max_semesters,
             semester_status="Completed",
             is_completed=True,
-            active_academic_year=active_sem.academic_year,
-            active_term_number=active_sem.term_number,
+            active_academic_year=current_academic_year,
+            active_term_number=1,
         )
 
     return SemesterCalculationResult(
         calculated_semester=raw_semester,
         semester_status="In Progress",
         is_completed=False,
-        active_academic_year=active_sem.academic_year,
-        active_term_number=active_sem.term_number,
+        active_academic_year=current_academic_year,
+        active_term_number=1,
     )
 
 
@@ -115,27 +110,26 @@ def resolve_student_semester_safe(
     db: Session,
     *,
     admission_year: int,
+    reference_date: date | None = None,
     max_semesters: int = PROGRAMME_MAX_SEMESTERS,
 ) -> SemesterCalculationResult:
-    """Resolve semester calculation without throwing if calendar is unset/ambiguous."""
+    """Resolve semester calculation safely for previews without throwing."""
     try:
         return calculate_student_semester(
             db,
             admission_year=admission_year,
+            reference_date=reference_date,
             max_semesters=max_semesters,
         )
-    except BusinessRuleError as exc:
-        msg = str(exc)
-        if "No active semester" in msg:
-            status_label = "Calendar Not Configured"
-        elif "ambiguous" in msg:
-            status_label = "Calendar Ambiguous"
-        else:
-            status_label = "Invalid Admission Year"
+    except BusinessRuleError:
+        current_start_year = get_current_academic_year_start(
+            db,
+            reference_date=reference_date,
+        )
         return SemesterCalculationResult(
             calculated_semester=None,
-            semester_status=status_label,
+            semester_status="Invalid Admission Year",
             is_completed=False,
-            active_academic_year=None,
-            active_term_number=None,
+            active_academic_year=f"{current_start_year}-{current_start_year + 1}",
+            active_term_number=1,
         )

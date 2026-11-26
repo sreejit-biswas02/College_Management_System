@@ -18,7 +18,16 @@ export function renderDataTable({
     .map((row) => {
       const cells = columns
         .map((col) => {
-          const content = col.render ? col.render(row) : escapeHtml(row[col.key]);
+          let content;
+          if (col.render) {
+            content = col.render(row);
+          } else {
+            const raw = row[col.key];
+            content =
+              raw === null || raw === undefined || String(raw).trim() === ""
+                ? '<span class="text-muted">—</span>'
+                : escapeHtml(raw);
+          }
           return `<td>${content}</td>`;
         })
         .join("");

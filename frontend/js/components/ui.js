@@ -17,6 +17,80 @@ export function formatIndianDate(isoDate) {
   return `${day}/${month}/${year}`;
 }
 
+export function formatIndianDateTime(isoDateTime) {
+  if (!isoDateTime) return "—";
+  const dt = new Date(isoDateTime);
+  if (Number.isNaN(dt.getTime())) return formatIndianDate(isoDateTime);
+  return dt.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+export function formatTime12h(timeStr) {
+  if (!timeStr) return "—";
+  const parts = String(timeStr).trim().split(":");
+  if (parts.length < 2) return String(timeStr);
+  const hour24 = Number(parts[0]);
+  const minute = parts[1];
+  if (Number.isNaN(hour24)) return String(timeStr);
+  const period = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${String(hour12).padStart(2, "0")}:${minute} ${period}`;
+}
+
+export function formatDayOfWeek(day) {
+  if (!day) return "—";
+  const s = String(day).trim().toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function formatOfferingLabel(offering, fallback = "Not assigned") {
+  if (!offering || !offering.course) return fallback;
+  const code = offering.course.code || "";
+  const title = offering.course.title || "";
+  const sec = offering.section ? ` (Sec ${offering.section})` : "";
+  return `${code} — ${title}${sec}`.trim();
+}
+
+export function formatNoticeAudience(notice) {
+  const targets = notice?.targets || [];
+  if (!targets.length) return "All Users";
+  return targets
+    .map((t) => {
+      const parts = [];
+      if (t.target_role) {
+        const r = String(t.target_role).toLowerCase();
+        parts.push(r === "student" ? "Students" : r === "faculty" ? "Faculty" : r);
+      }
+      if (t.department) {
+        parts.push(`${t.department.code} — ${t.department.name}`);
+      } else if (t.department_id) {
+        parts.push(`Dept #${t.department_id}`);
+      }
+      if (t.course_offering?.course) {
+        parts.push(
+          `${t.course_offering.course.code} (Sec ${t.course_offering.section})`
+        );
+      } else if (t.course_offering_id) {
+        parts.push(`Offering #${t.course_offering_id}`);
+      }
+      return parts.join(" • ") || "All Users";
+    })
+    .join(", ");
+}
+
+export function formatTextOrMuted(value, fallback = "—") {
+  if (value === null || value === undefined || String(value).trim() === "") {
+    return `<span class="text-muted">${escapeHtml(fallback)}</span>`;
+  }
+  return escapeHtml(value);
+}
+
 export function renderLoading(message = "Loading...") {
   return `
     <div class="state-box" role="status">

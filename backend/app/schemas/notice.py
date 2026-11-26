@@ -5,6 +5,8 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.user import UserRole
+from app.schemas.academic import DepartmentSummary
+from app.schemas.course_offering import CourseOfferingResponse
 
 
 class NoticeTargetInput(BaseModel):
@@ -13,6 +15,16 @@ class NoticeTargetInput(BaseModel):
     target_role: UserRole | None = None
     department_id: int | None = Field(default=None, gt=0)
     course_offering_id: int | None = Field(default=None, gt=0)
+
+
+class NoticeAuthorSummary(BaseModel):
+    """Compact notice author representation without sensitive fields."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    full_name: str
+    role: UserRole
 
 
 class NoticeTargetResponse(BaseModel):
@@ -25,6 +37,8 @@ class NoticeTargetResponse(BaseModel):
     target_role: UserRole | None
     department_id: int | None
     course_offering_id: int | None
+    department: DepartmentSummary | None = None
+    course_offering: CourseOfferingResponse | None = None
 
 
 class NoticeCreate(BaseModel):
@@ -61,4 +75,5 @@ class NoticeResponse(BaseModel):
     expires_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    posted_by_user: NoticeAuthorSummary | None = None
     targets: list[NoticeTargetResponse] = Field(default_factory=list)

@@ -3,7 +3,7 @@
 from datetime import time
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.course_offering import CourseOffering, Enrollment, EnrollmentStatus
 from app.models.timetable import DayOfWeek, TimetableSlot
@@ -146,6 +146,21 @@ def delete_timetable_slot(db: Session, slot_id: int) -> None:
     db.commit()
 
 
+def _timetable_load_options() -> tuple:
+    return (
+        selectinload(TimetableSlot.course_offering).selectinload(CourseOffering.course),
+        selectinload(TimetableSlot.course_offering).selectinload(
+            CourseOffering.semester
+        ),
+        selectinload(TimetableSlot.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.user),
+        selectinload(TimetableSlot.course_offering)
+        .selectinload(CourseOffering.faculty)
+        .selectinload(Faculty.department),
+    )
+
+
 def list_timetable_slots(
     db: Session,
     *,
@@ -158,7 +173,11 @@ def list_timetable_slots(
     page_size: int = 50,
 ) -> tuple[list[TimetableSlot], int]:
     """List timetable slots with filtering and pagination."""
-    stmt = select(TimetableSlot).join(TimetableSlot.course_offering)
+    stmt = (
+        select(TimetableSlot)
+        .options(*_timetable_load_options())
+        .join(TimetableSlot.course_offering)
+    )
     count_stmt = select(func.count(TimetableSlot.id)).join(
         TimetableSlot.course_offering
     )
@@ -229,8 +248,10 @@ def get_my_timetable(
     if not offering_ids:
         return []
 
-    stmt = select(TimetableSlot).where(
-        TimetableSlot.course_offering_id.in_(offering_ids)
+    stmt = (
+        select(TimetableSlot)
+        .options(*_timetable_load_options())
+        .where(TimetableSlot.course_offering_id.in_(offering_ids))
     )
     if day_of_week is not None:
         stmt = stmt.where(TimetableSlot.day_of_week == day_of_week)

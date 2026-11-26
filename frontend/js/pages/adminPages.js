@@ -1,4 +1,4 @@
-import * as adminApi from "../api/adminApi.js?v=3";
+import * as adminApi from "../api/adminApi.js?v=5";
 import * as opsApi from "../api/operationsApi.js";
 import { renderDataTable } from "../components/dataTable.js";
 import { closeModal, openModal } from "../components/modal.js";
@@ -10,7 +10,12 @@ import {
 import { showToast } from "../components/toast.js";
 import {
   escapeHtml,
+  formatDayOfWeek,
   formatIndianDate,
+  formatIndianDateTime,
+  formatNoticeAudience,
+  formatOfferingLabel,
+  formatTime12h,
   renderErrorState,
   renderLoading,
   renderSearchInput,
@@ -228,57 +233,97 @@ function mountOfferingSelect(id = "offering-select") {
 }
 
 async function renderAdminOverview(container) {
-  const [students, faculty, depts, sems, courses, offerings] =
-    await Promise.all([
-      adminApi.listStudents({ page: 1, page_size: 1 }),
-      adminApi.listFaculty({ page: 1, page_size: 1 }),
-      adminApi.listDepartments({ page: 1, page_size: 1 }),
-      adminApi.listSemesters({ page: 1, page_size: 1 }),
-      adminApi.listCourses({ page: 1, page_size: 1 }),
-      adminApi.listOfferings({ page: 1, page_size: 1 }),
-    ]);
+  const [summary, notices, offerings] = await Promise.all([
+    adminApi.getAdminDashboardSummary(),
+    opsApi.listNotices({ page: 1, page_size: 5 }),
+    adminApi.listOfferings({ page: 1, page_size: 5, is_active: true }),
+  ]);
 
   const cards = [
-    ["Students", students.total],
-    ["Faculty", faculty.total],
-    ["Departments", depts.total],
-    ["Semesters", sems.total],
-    ["Courses", courses.total],
-    ["Course Offerings", offerings.total],
+    ["Total Students", summary.total_students, `${summary.active_students} active`],
+    ["Total Faculty", summary.total_faculty, "Registered teaching staff"],
+    ["Active Departments", summary.total_departments, "Academic departments"],
+    ["Active Courses", summary.active_courses, "Catalog courses"],
+    ["Active Offerings", summary.active_offerings, "Currently running sections"],
+    ["Total Enrollments", summary.total_enrollments, "Active student enrollments"],
+    [
+      "Attendance Rate",
+      `${summary.attendance_rate_percentage}%`,
+      `${summary.total_attendance_sessions} sessions recorded`,
+    ],
+    [
+      "Pending Submissions",
+      summary.pending_submissions,
+      `Across ${summary.total_assignments} assignment(s)`,
+    ],
   ];
 
   container.innerHTML = `
     <section class="stats-grid">
       ${cards
         .map(
-          ([label, val]) => `
+          ([label, val, sub]) => `
         <div class="stat-card">
           <div class="text-muted">${escapeHtml(label)}</div>
           <div class="stat-value">${escapeHtml(val)}</div>
+          <div class="stat-subtext">${escapeHtml(sub)}</div>
         </div>`
         )
         .join("")}
     </section>
-    <section class="card">
-      <h2 class="card-title">System Administration</h2>
-      <p class="text-muted" style="margin-top:0.5rem;">
-        Use the sidebar to manage students, faculty, academic structure, enrollments, notices, and timetable slots.
-      </p>
-    </section>
+
+    <div class="dashboard-grid">
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Active Course Offerings</h2></div>
+        ${renderDataTable({
+          columns: [
+            { label: "Course", render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`) },
+            { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
+            {
+              label: "Faculty",
+              render: (r) =>
+                escapeHtml(`${r.faculty.employee_id} — ${r.faculty.user.full_name}`),
+            },
+            { key: "section", label: "Sec" },
+          ],
+          rows: offerings.items,
+          emptyTitle: "No active course offerings",
+        })}
+      </section>
+
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Recent Notices</h2></div>
+        ${renderDataTable({
+          columns: [
+            { key: "title", label: "Title" },
+            { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+            {
+              label: "Published",
+              render: (r) => escapeHtml(formatIndianDateTime(r.published_at)),
+            },
+            {
+              label: "Status",
+              render: (r) =>
+                renderStatusBadge(
+                  r.is_published ? "Published" : "Archived",
+                  r.is_published ? "success" : "warning"
+                ),
+            },
+          ],
+          rows: notices.items,
+          emptyTitle: "No notices published",
+        })}
+      </section>
+    </div>
   `;
 }
 
 function formatStudentSemesterBadge(r) {
-  if (r.is_completed) {
+  const sem = r.current_semester_number ?? r.calculated_semester;
+  if (r.is_completed || sem > 8) {
     return renderStatusBadge("Completed (Sem 8)", "info");
   }
-  if (r.calculated_semester) {
-    return `Semester ${escapeHtml(r.calculated_semester)}`;
-  }
-  if (r.semester_status) {
-    return renderStatusBadge(r.semester_status, "warning");
-  }
-  return `Semester ${escapeHtml(r.current_semester_number)}`;
+  return `Semester ${escapeHtml(sem)}`;
 }
 
 function buildAdmissionAcademicYearOptions(selectedYear = 2026) {
@@ -297,12 +342,11 @@ async function updateSemesterPreviewBox(yearValue, previewEl) {
   try {
     const res = await adminApi.previewStudentSemester(Number(yearValue));
     if (res.is_completed) {
-      previewEl.textContent = `Completed (8 Semesters) • Active Calendar: ${res.active_academic_year}`;
+      previewEl.textContent = `Completed (8 Semesters) • Academic Year: ${res.active_academic_year}`;
     } else if (res.calculated_semester) {
-      const parity = res.active_term_number % 2 === 1 ? "Odd" : "Even";
-      previewEl.textContent = `Semester ${res.calculated_semester} (${parity}) • Active Calendar: ${res.active_academic_year}`;
+      previewEl.textContent = `Calculated Semester: ${res.calculated_semester} (Academic Year: ${res.active_academic_year})`;
     } else {
-      previewEl.textContent = `${res.semester_status}${res.active_academic_year ? ` (Active: ${res.active_academic_year})` : ""}`;
+      previewEl.textContent = res.semester_status || "Invalid Admission Year";
     }
   } catch (err) {
     previewEl.textContent = err.message || "Unable to calculate semester.";
@@ -331,14 +375,20 @@ async function renderStudents(container) {
             <option value="true" ${state.showArchived ? "selected" : ""}>Archived Students</option>
           </select>
         </div>
-        <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Student</button>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button id="promote-students-btn" class="btn btn-outline btn-sm" type="button">Promote Students to Next Semester</button>
+          <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Student</button>
+        </div>
       </div>
       ${renderDataTable({
         columns: [
           { key: "roll_number", label: "Student ID" },
           { label: "Name", render: (r) => escapeHtml(r.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.user.email) },
-          { label: "Department", render: (r) => escapeHtml(r.department.code) },
+          {
+            label: "Department",
+            render: (r) => escapeHtml(`${r.department.code} — ${r.department.name}`),
+          },
           {
             label: "Admission Year",
             render: (r) =>
@@ -368,7 +418,7 @@ async function renderStudents(container) {
                     <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.user.is_active}" type="button">${
                       r.user.is_active ? "Deactivate" : "Activate"
                     }</button>
-                    <button class="btn btn-danger btn-sm delete-student-btn" data-id="${r.id}" data-name="${escapeHtml(r.user.full_name)}" data-email="${escapeHtml(r.user.email)}" data-roll="${escapeHtml(r.roll_number)}" type="button">Delete</button>
+                    <button class="btn btn-danger btn-sm delete-student-btn" data-id="${r.id}" data-name="${escapeHtml(r.user.full_name)}" data-email="${escapeHtml(r.user.email)}" data-roll="${escapeHtml(r.roll_number)}" type="button">Archive</button>
                   </div>`,
           },
         ],
@@ -423,7 +473,7 @@ async function renderStudents(container) {
             <div style="padding:0.75rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-muted);">
               <div><strong>Name:</strong> ${escapeHtml(name)}</div>
               <div><strong>Email:</strong> ${escapeHtml(email)}</div>
-              <div><strong>Roll Number:</strong> ${escapeHtml(roll)}</div>
+              <div><strong>Student ID:</strong> ${escapeHtml(roll)}</div>
             </div>
             <p class="text-muted">
               The student's account will be archived and they will <strong>no longer be able to log in</strong>.
@@ -502,12 +552,12 @@ async function renderStudents(container) {
         title: `Edit Student (${stu.roll_number})`,
         fieldsHtml: `
           <div class="form-group">
-            <label class="form-label" for="edit-stu-roll">Student ID</label>
+            <label class="form-label" for="edit-stu-roll">Student ID <span class="required-star">*</span></label>
             <input id="edit-stu-roll" name="roll_number" value="${escapeHtml(stu.roll_number)}" class="form-control" required />
             <small class="text-muted">Format: S-DEPTCODE-YYYY-XXX</small>
           </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(stu.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(stu.user.email)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Full Name <span class="required-star">*</span></label><input name="full_name" value="${escapeHtml(stu.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email <span class="required-star">*</span></label><input name="email" type="email" value="${escapeHtml(stu.user.email)}" class="form-control" required /></div>
           ${renderSearchableSelectField({
             id: "edit-student-dept-select",
             name: "department_id",
@@ -516,14 +566,14 @@ async function renderStudents(container) {
             required: true,
           })}
           <div class="form-group">
-            <label class="form-label" for="edit-stu-adm-year">Admission Academic Year</label>
+            <label class="form-label" for="edit-stu-adm-year">Admission Academic Year <span class="required-star">*</span></label>
             <select id="edit-stu-adm-year" name="admission_year" class="form-control" required>
               ${buildAdmissionAcademicYearOptions(stu.admission_year)}
             </select>
           </div>
           <div class="form-group">
             <label class="form-label">Calculated Semester (Auto)</label>
-            <div id="edit-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
+            <div id="edit-stu-sem-preview" class="form-control" aria-readonly="true">Calculating...</div>
           </div>
           <div id="edit-stu-recalc-wrap" class="form-group hidden">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
@@ -607,250 +657,89 @@ async function renderStudents(container) {
             payload.roll_number = form.roll_number;
           }
           const updated = await adminApi.updateStudent(stu.id, payload);
-          showToast(
-            `Student updated (${updated.roll_number}).`,
-            "success"
-          );
+          showToast(`Student updated (${updated.roll_number}).`, "success");
           renderStudents(container);
         },
       });
     });
   });
 
-  container.querySelectorAll(".edit-student-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const stu = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!stu) return;
-      let deptChanged = false;
-      let yearChanged = false;
+  document
+    .getElementById("promote-students-btn")
+    ?.addEventListener("click", async () => {
+      const btn = document.getElementById("promote-students-btn");
+      if (btn) btn.disabled = true;
+      try {
+        const preview = await adminApi.getPromotionPreview();
+        const breakdownHtml = preview.breakdown.length
+          ? `<ul style="margin:0.5rem 0 0 1.25rem;">
+              ${preview.breakdown
+                .map(
+                  (b) =>
+                    `<li>Semester ${escapeHtml(b.old_semester)} &rarr; Semester ${escapeHtml(b.new_semester)}: <strong>${escapeHtml(b.count)}</strong> active student(s)</li>`
+                )
+                .join("")}
+            </ul>`
+          : `<p class="text-muted">No active odd-semester students are eligible for promotion.</p>`;
 
-      openFormModal({
-        title: `Edit Student (${stu.roll_number})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-stu-roll">Student ID</label>
-            <input id="edit-stu-roll" name="roll_number" value="${escapeHtml(stu.roll_number)}" class="form-control" required />
-            <small class="text-muted">Format: S-DEPTCODE-YYYY-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(stu.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(stu.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-student-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div class="form-group">
-            <label class="form-label" for="edit-stu-adm-year">Admission Academic Year</label>
-            <select id="edit-stu-adm-year" name="admission_year" class="form-control" required>
-              ${buildAdmissionAcademicYearOptions(stu.admission_year)}
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Calculated Semester (Auto)</label>
-            <div id="edit-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
-          </div>
-          <div id="edit-stu-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input id="edit-stu-recalc" name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Student ID for the updated department / admission year</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(stu.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Date of Birth</label><input name="date_of_birth" type="date" value="${escapeHtml(stu.date_of_birth || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${stu.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!stu.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-student-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              deptChanged = Boolean(val && Number(val) !== stu.department_id);
-              const wrap = document.getElementById("edit-stu-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
+        openModal({
+          title: `Promote Students (${preview.academic_year})`,
+          bodyHtml: `
+            <div style="display:flex;flex-direction:column;gap:0.75rem;">
+              <p>This operation transitions eligible active students from odd semesters to the next even semester.</p>
+              <div style="padding:0.75rem;border:1px solid var(--color-border);border-radius:6px;background:var(--color-surface-muted);">
+                <div><strong>Eligible Active Students:</strong> ${escapeHtml(preview.eligible_count)}</div>
+                <div><strong>Inactive Students Skipped:</strong> ${escapeHtml(preview.inactive_skipped_count)}</div>
+                <div><strong>Already Promoted (${escapeHtml(preview.academic_year)}):</strong> ${escapeHtml(preview.already_promoted_count)}</div>
+                ${breakdownHtml}
+              </div>
+              ${
+                !preview.can_promote && preview.already_promoted_count > 0
+                  ? `<p class="text-danger">Promotion for ${escapeHtml(preview.academic_year)} has already been performed.</p>`
+                  : ""
               }
-            },
-          });
-          deptSel?.setValue({
-            value: String(stu.department.id),
-            label: `${stu.department.code} — ${stu.department.name}`,
-          });
+            </div>
+          `,
+          footerHtml: `
+            <button id="promo-cancel-btn" class="btn btn-outline" type="button">Cancel</button>
+            <button id="promo-confirm-btn" class="btn btn-primary" type="button" ${
+              preview.can_promote ? "" : "disabled"
+            }>Confirm Promotion</button>
+          `,
+        });
 
-          const yearEl = document.getElementById("edit-stu-adm-year");
-          const previewEl = document.getElementById("edit-stu-sem-preview");
-          updateSemesterPreviewBox(yearEl?.value, previewEl);
-          yearEl?.addEventListener("change", () => {
-            yearChanged = Number(yearEl.value) !== stu.admission_year;
-            const wrap = document.getElementById("edit-stu-recalc-wrap");
-            if (wrap) {
-              wrap.classList.toggle("hidden", !(deptChanged || yearChanged));
-            }
-            updateSemesterPreviewBox(yearEl.value, previewEl);
-          });
-
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            admission_year: Number(form.admission_year),
-            phone: form.phone || null,
-            date_of_birth: form.date_of_birth || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.roll_number) {
-            payload.roll_number = form.roll_number;
+        document
+          .getElementById("promo-cancel-btn")
+          ?.addEventListener("click", closeModal);
+        const confirmBtn = document.getElementById("promo-confirm-btn");
+        confirmBtn?.addEventListener("click", async () => {
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = "Promoting...";
+          try {
+            const res = await adminApi.promoteStudentsSemester();
+            closeModal();
+            showToast(res.message, "success");
+            await renderStudents(container);
+          } catch (err) {
+            showToast(err.message || "Promotion failed.", "error");
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = "Confirm Promotion";
           }
-          const updated = await adminApi.updateStudent(stu.id, payload);
-          showToast(
-            `Student updated (${updated.roll_number}).`,
-            "success"
-          );
-          renderStudents(container);
-        },
-      });
+        });
+      } catch (err) {
+        showToast(err.message || "Failed to load promotion preview.", "error");
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     });
-  });
-
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
-    });
-  });
 
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Create Student",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Password</label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
+        <div class="form-group"><label class="form-label">Full Name <span class="required-star">*</span></label><input name="full_name" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Email <span class="required-star">*</span></label><input name="email" type="email" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Password <span class="required-star">*</span></label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
         ${renderSearchableSelectField({
           id: "student-dept-select",
           name: "department_id",
@@ -859,14 +748,14 @@ async function renderStudents(container) {
           required: true,
         })}
         <div class="form-group">
-          <label class="form-label" for="create-stu-adm-year">Admission Academic Year</label>
+          <label class="form-label" for="create-stu-adm-year">Admission Academic Year <span class="required-star">*</span></label>
           <select id="create-stu-adm-year" name="admission_year" class="form-control" required>
             ${buildAdmissionAcademicYearOptions(2026)}
           </select>
         </div>
         <div class="form-group">
           <label class="form-label">Calculated Semester (Auto)</label>
-          <div id="create-stu-sem-preview" class="form-control" style="background:var(--color-surface-muted);" aria-readonly="true">Calculating...</div>
+          <div id="create-stu-sem-preview" class="form-control" aria-readonly="true">Calculating...</div>
         </div>
       `,
       onMount: () => {
@@ -906,7 +795,7 @@ async function renderFaculty(container) {
       <div class="card-header">
         ${renderSearchInput({
           id: "entity-search",
-          placeholder: "Search name, email, emp ID...",
+          placeholder: "Search name, email, faculty ID...",
           value: state.search,
         })}
         <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Faculty</button>
@@ -917,7 +806,10 @@ async function renderFaculty(container) {
           { label: "Name", render: (r) => escapeHtml(r.user.full_name) },
           { label: "Email", render: (r) => escapeHtml(r.user.email) },
           { key: "designation", label: "Designation" },
-          { label: "Dept", render: (r) => escapeHtml(r.department.code) },
+          {
+            label: "Department",
+            render: (r) => escapeHtml(`${r.department.code} — ${r.department.name}`),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -975,12 +867,12 @@ async function renderFaculty(container) {
         title: `Edit Faculty (${fac.employee_id})`,
         fieldsHtml: `
           <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
+            <label class="form-label" for="edit-fac-emp">Faculty ID <span class="required-star">*</span></label>
             <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
             <small class="text-muted">Format: F-DEPTCODE-XXX</small>
           </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Full Name <span class="required-star">*</span></label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Email <span class="required-star">*</span></label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
           ${renderSearchableSelectField({
             id: "edit-faculty-dept-select",
             name: "department_id",
@@ -994,7 +886,7 @@ async function renderFaculty(container) {
               <span>Recalculate Faculty ID for the new department</span>
             </label>
           </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Designation <span class="required-star">*</span></label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
           <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
           <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
           <div class="form-group">
@@ -1071,9 +963,9 @@ async function renderFaculty(container) {
     openFormModal({
       title: "Create Faculty",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Password</label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
+        <div class="form-group"><label class="form-label">Full Name <span class="required-star">*</span></label><input name="full_name" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Email <span class="required-star">*</span></label><input name="email" type="email" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Password <span class="required-star">*</span></label><input name="password" type="password" class="form-control" placeholder="Min 8 chars, Aa1!" required /></div>
         ${renderSearchableSelectField({
           id: "faculty-dept-select",
           name: "department_id",
@@ -1081,7 +973,7 @@ async function renderFaculty(container) {
           placeholder: "Search department by code or name...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Designation</label><input name="designation" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Designation <span class="required-star">*</span></label><input name="designation" class="form-control" placeholder="Assistant Professor" required /></div>
       `,
       onMount: () => [mountDepartmentSelect("faculty-dept-select")],
       onSubmit: async (form) => {
@@ -1100,18 +992,26 @@ async function renderFaculty(container) {
 }
 
 async function renderDepartments(container) {
-  const data = await adminApi.listDepartments({ page: state.page, page_size: 10 });
+  const data = await adminApi.listDepartments({
+    page: state.page,
+    page_size: 10,
+    search: state.search,
+  });
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">Departments</h2>
+        ${renderSearchInput({
+          id: "entity-search",
+          placeholder: "Search department code or name...",
+          value: state.search,
+        })}
         <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Add Department</button>
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
           { key: "code", label: "Code" },
-          { key: "name", label: "Name" },
+          { key: "name", label: "Department Name" },
+          { key: "description", label: "Description" },
           {
             label: "Status",
             render: (r) =>
@@ -1123,9 +1023,12 @@ async function renderDepartments(container) {
           {
             label: "Action",
             render: (r) =>
-              `<button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.is_active}" type="button">${
-                r.is_active ? "Deactivate" : "Activate"
-              }</button>`,
+              `<div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+                <button class="btn btn-outline btn-sm edit-dept-btn" data-id="${r.id}" type="button">Edit</button>
+                <button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.is_active}" type="button">${
+                  r.is_active ? "Deactivate" : "Activate"
+                }</button>
+              </div>`,
           },
         ],
         rows: data.items,
@@ -1133,6 +1036,11 @@ async function renderDepartments(container) {
       ${renderPagination(data)}
     </section>
   `;
+  document.getElementById("entity-search")?.addEventListener("change", (e) => {
+    state.search = e.target.value;
+    state.page = 1;
+    renderDepartments(container);
+  });
   bindPagination(data, () => renderDepartments(container));
   container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -1147,102 +1055,26 @@ async function renderDepartments(container) {
       }
     });
   });
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
 
+  container.querySelectorAll(".edit-dept-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const dept = data.items.find((d) => String(d.id) === btn.dataset.id);
+      if (!dept) return;
       openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
+        title: `Edit Department (${dept.code})`,
         fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
+          <div class="form-group"><label class="form-label">Code <span class="required-star">*</span></label><input name="code" value="${escapeHtml(dept.code)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Name <span class="required-star">*</span></label><input name="name" value="${escapeHtml(dept.name)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Description</label><textarea name="description" rows="2" class="form-control">${escapeHtml(dept.description || "")}</textarea></div>
         `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
         onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
+          await adminApi.updateDepartment(dept.id, {
+            code: form.code,
+            name: form.name,
+            description: form.description || null,
+          });
+          showToast("Department updated.", "success");
+          renderDepartments(container);
         },
       });
     });
@@ -1252,11 +1084,15 @@ async function renderDepartments(container) {
     openFormModal({
       title: "Create Department",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Code</label><input name="code" class="form-control" placeholder="CSE" required /></div>
-        <div class="form-group"><label class="form-label">Name</label><input name="name" class="form-control" placeholder="Computer Science" required /></div>
+        <div class="form-group"><label class="form-label">Code <span class="required-star">*</span></label><input name="code" class="form-control" placeholder="CSE" required /></div>
+        <div class="form-group"><label class="form-label">Name <span class="required-star">*</span></label><input name="name" class="form-control" placeholder="Computer Science" required /></div>
+        <div class="form-group"><label class="form-label">Description</label><textarea name="description" rows="2" class="form-control" placeholder="Optional description..."></textarea></div>
       `,
       onSubmit: async (form) => {
-        await adminApi.createDepartment(form);
+        await adminApi.createDepartment({
+          ...form,
+          description: form.description || null,
+        });
         showToast("Department created.", "success");
         renderDepartments(container);
       },
@@ -1300,14 +1136,14 @@ function renderSemesterFormFields(semester = null) {
   const isActive = semester ? Boolean(semester.is_active) : true;
   return `
     <div class="form-group">
-      <label class="form-label" for="sem-term-number">Semester Number</label>
+      <label class="form-label" for="sem-term-number">Semester Number <span class="required-star">*</span></label>
       <select id="sem-term-number" name="term_number" class="form-control" required>
         ${buildSemesterNumberOptions(termNumber)}
       </select>
       <small class="text-muted">Semester name is generated automatically (e.g. Semester ${escapeHtml(termNumber)}).</small>
     </div>
     <div class="form-group">
-      <label class="form-label" for="sem-academic-year">Academic Year</label>
+      <label class="form-label" for="sem-academic-year">Academic Year <span class="required-star">*</span></label>
       <input
         id="sem-academic-year"
         name="academic_year"
@@ -1320,11 +1156,11 @@ function renderSemesterFormFields(semester = null) {
       <small class="text-muted">Format: YYYY-YYYY (e.g. 2026-2027).</small>
     </div>
     <div class="form-group">
-      <label class="form-label" for="sem-start-date">Start Date</label>
+      <label class="form-label" for="sem-start-date">Start Date <span class="required-star">*</span></label>
       <input id="sem-start-date" name="start_date" type="date" value="${escapeHtml(startDate)}" class="form-control" required />
     </div>
     <div class="form-group">
-      <label class="form-label" for="sem-end-date">End Date</label>
+      <label class="form-label" for="sem-end-date">End Date <span class="required-star">*</span></label>
       <input id="sem-end-date" name="end_date" type="date" value="${escapeHtml(endDate)}" class="form-control" required />
     </div>
     <div class="form-group">
@@ -1355,7 +1191,6 @@ async function renderSemesters(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
           { key: "name", label: "Semester" },
           {
             label: "Type",
@@ -1446,106 +1281,6 @@ async function renderSemesters(container) {
       });
     });
   });
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
-    });
-  });
 
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
@@ -1586,11 +1321,18 @@ async function renderCourses(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
           { key: "code", label: "Code" },
           { key: "title", label: "Title" },
           { key: "credits", label: "Credits" },
-          { label: "Department", render: (r) => escapeHtml(r.department.code) },
+          {
+            label: "Department",
+            render: (r) => escapeHtml(`${r.department.code} — ${r.department.name}`),
+          },
+          {
+            label: "Action",
+            render: (r) =>
+              `<button class="btn btn-outline btn-sm edit-course-btn" data-id="${r.id}" type="button">Edit</button>`,
+          },
         ],
         rows: data.items,
       })}
@@ -1603,102 +1345,26 @@ async function renderCourses(container) {
     renderCourses(container);
   });
   bindPagination(data, () => renderCourses(container));
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
 
+  container.querySelectorAll(".edit-course-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const course = data.items.find((c) => String(c.id) === btn.dataset.id);
+      if (!course) return;
       openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
+        title: `Edit Course (${course.code})`,
         fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
+          <div class="form-group"><label class="form-label">Code <span class="required-star">*</span></label><input name="code" value="${escapeHtml(course.code)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Title <span class="required-star">*</span></label><input name="title" value="${escapeHtml(course.title)}" class="form-control" required /></div>
+          <div class="form-group"><label class="form-label">Credits <span class="required-star">*</span></label><input name="credits" type="number" min="1" value="${escapeHtml(course.credits)}" class="form-control" required /></div>
         `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
         onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
+          await adminApi.updateCourse(course.id, {
+            code: form.code,
+            title: form.title,
+            credits: Number(form.credits),
+          });
+          showToast("Course updated.", "success");
+          renderCourses(container);
         },
       });
     });
@@ -1715,9 +1381,9 @@ async function renderCourses(container) {
           placeholder: "Search department by code or name...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Code</label><input name="code" class="form-control" placeholder="CS101" required /></div>
-        <div class="form-group"><label class="form-label">Title</label><input name="title" class="form-control" placeholder="Algorithms" required /></div>
-        <div class="form-group"><label class="form-label">Credits</label><input name="credits" type="number" min="1" value="4" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Code <span class="required-star">*</span></label><input name="code" class="form-control" placeholder="CS101" required /></div>
+        <div class="form-group"><label class="form-label">Title <span class="required-star">*</span></label><input name="title" class="form-control" placeholder="Algorithms" required /></div>
+        <div class="form-group"><label class="form-label">Credits <span class="required-star">*</span></label><input name="credits" type="number" min="1" value="4" class="form-control" required /></div>
       `,
       onMount: () => [mountDepartmentSelect("course-dept-select")],
       onSubmit: async (form) => {
@@ -1734,16 +1400,23 @@ async function renderCourses(container) {
 }
 
 async function renderOfferings(container) {
-  const data = await adminApi.listOfferings({ page: state.page, page_size: 10 });
+  const data = await adminApi.listOfferings({
+    page: state.page,
+    page_size: 10,
+    search: state.search,
+  });
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
-        <h2 class="card-title">Course Offerings</h2>
+        ${renderSearchInput({
+          id: "entity-search",
+          placeholder: "Search course, section, or faculty...",
+          value: state.search,
+        })}
         <button id="add-entity-btn" class="btn btn-primary btn-sm" type="button">+ Create Offering</button>
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
           { label: "Course", render: (r) => escapeHtml(`${r.course.code} — ${r.course.title}`) },
           { label: "Semester", render: (r) => escapeHtml(`${r.semester.name} (${r.semester.academic_year})`) },
           {
@@ -1751,7 +1424,8 @@ async function renderOfferings(container) {
             render: (r) =>
               escapeHtml(`${r.faculty.employee_id} — ${r.faculty.user.full_name}`),
           },
-          { key: "section", label: "Sec" },
+          { key: "section", label: "Section" },
+          { label: "Capacity", render: (r) => escapeHtml(r.max_capacity ?? "Unlimited") },
           {
             label: "Status",
             render: (r) =>
@@ -1760,111 +1434,36 @@ async function renderOfferings(container) {
                 r.is_active ? "success" : "danger"
               ),
           },
+          {
+            label: "Action",
+            render: (r) =>
+              `<button class="btn btn-outline btn-sm toggle-active-btn" data-id="${r.id}" data-next="${!r.is_active}" type="button">${
+                r.is_active ? "Deactivate" : "Activate"
+              }</button>`,
+          },
         ],
         rows: data.items,
       })}
       ${renderPagination(data)}
     </section>
   `;
+  document.getElementById("entity-search")?.addEventListener("change", (e) => {
+    state.search = e.target.value;
+    state.page = 1;
+    renderOfferings(container);
+  });
   bindPagination(data, () => renderOfferings(container));
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
+  container.querySelectorAll(".toggle-active-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await adminApi.setOfferingActive(btn.dataset.id, btn.dataset.next === "true");
+        showToast("Course offering updated.", "success");
+        renderOfferings(container);
+      } catch (err) {
+        showToast(err.message || "Failed to update offering.", "error");
+        btn.disabled = false;
+      }
     });
   });
 
@@ -1893,7 +1492,7 @@ async function renderOfferings(container) {
           placeholder: "Search faculty by Employee ID, name, or email...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Section</label><input name="section" value="A" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Section <span class="required-star">*</span></label><input name="section" value="A" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Max Capacity</label><input name="max_capacity" type="number" min="1" value="60" class="form-control" /></div>
       `,
       onMount: () => [
@@ -1926,120 +1525,42 @@ async function renderEnrollments(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
-          { label: "Student", render: (r) => escapeHtml(`${r.student.roll_number} (${r.student.user.full_name})`) },
-          { label: "Course", render: (r) => escapeHtml(`${r.course_offering.course.code} (${r.course_offering.section})`) },
+          {
+            label: "Student",
+            render: (r) =>
+              escapeHtml(`${r.student.roll_number} — ${r.student.user.full_name}`),
+          },
+          {
+            label: "Course",
+            render: (r) => escapeHtml(formatOfferingLabel(r.course_offering)),
+          },
+          {
+            label: "Semester",
+            render: (r) =>
+              escapeHtml(
+                `${r.course_offering.semester.name} (${r.course_offering.semester.academic_year})`
+              ),
+          },
+          {
+            label: "Enrolled At",
+            render: (r) => escapeHtml(formatIndianDateTime(r.enrolled_at)),
+          },
           {
             label: "Status",
-            render: (r) => renderStatusBadge(r.status, r.status === "enrolled" ? "success" : "warning"),
+            render: (r) =>
+              renderStatusBadge(
+                r.status,
+                r.status === "enrolled" ? "success" : "warning"
+              ),
           },
         ],
         rows: data.items,
+        emptyTitle: "No enrollments found",
       })}
       ${renderPagination(data)}
     </section>
   `;
   bindPagination(data, () => renderEnrollments(container));
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
-    });
-  });
 
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
@@ -2086,8 +1607,17 @@ async function renderNotices(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
           { key: "title", label: "Title" },
+          { key: "body", label: "Message" },
+          { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+          {
+            label: "Published By",
+            render: (r) => escapeHtml(r.posted_by_user?.full_name || "Administration"),
+          },
+          {
+            label: "Published",
+            render: (r) => escapeHtml(formatIndianDateTime(r.published_at)),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -2105,6 +1635,7 @@ async function renderNotices(container) {
           },
         ],
         rows: data.items,
+        emptyTitle: "No notices published",
       })}
       ${renderPagination(data)}
     </section>
@@ -2123,113 +1654,13 @@ async function renderNotices(container) {
       }
     });
   });
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
-    });
-  });
 
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
       title: "Publish Notice",
       fieldsHtml: `
-        <div class="form-group"><label class="form-label">Title</label><input name="title" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">Body</label><textarea name="body" rows="3" class="form-control" required></textarea></div>
+        <div class="form-group"><label class="form-label">Title <span class="required-star">*</span></label><input name="title" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Body <span class="required-star">*</span></label><textarea name="body" rows="3" class="form-control" required></textarea></div>
         <div class="form-group"><label class="form-label">Target Role (optional)</label>
           <select name="target_role" class="form-control">
             <option value="">All Roles</option>
@@ -2261,12 +1692,26 @@ async function renderTimetable(container) {
       </div>
       ${renderDataTable({
         columns: [
-          { key: "id", label: "ID" },
-          { key: "course_offering_id", label: "Offering ID" },
-          { key: "day_of_week", label: "Day" },
-          { key: "start_time", label: "Start" },
-          { key: "end_time", label: "End" },
-          { key: "room", label: "Room" },
+          { label: "Day", render: (r) => escapeHtml(formatDayOfWeek(r.day_of_week)) },
+          {
+            label: "Time",
+            render: (r) =>
+              escapeHtml(`${formatTime12h(r.start_time)} – ${formatTime12h(r.end_time)}`),
+          },
+          {
+            label: "Course",
+            render: (r) => escapeHtml(formatOfferingLabel(r.course_offering)),
+          },
+          {
+            label: "Faculty",
+            render: (r) =>
+              escapeHtml(
+                r.course_offering?.faculty
+                  ? `${r.course_offering.faculty.employee_id} — ${r.course_offering.faculty.user.full_name}`
+                  : "Not assigned"
+              ),
+          },
+          { label: "Room", render: (r) => escapeHtml(r.room || "TBA") },
           {
             label: "Action",
             render: (r) =>
@@ -2274,6 +1719,7 @@ async function renderTimetable(container) {
           },
         ],
         rows: data.items,
+        emptyTitle: "No timetable slots configured",
       })}
       ${renderPagination(data)}
     </section>
@@ -2292,106 +1738,6 @@ async function renderTimetable(container) {
       }
     });
   });
-  container.querySelectorAll(".edit-faculty-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fac = data.items.find((item) => String(item.id) === btn.dataset.id);
-      if (!fac) return;
-
-      openFormModal({
-        title: `Edit Faculty (${fac.employee_id})`,
-        fieldsHtml: `
-          <div class="form-group">
-            <label class="form-label" for="edit-fac-emp">Faculty ID</label>
-            <input id="edit-fac-emp" name="employee_id" value="${escapeHtml(fac.employee_id)}" class="form-control" required />
-            <small class="text-muted">Format: F-DEPTCODE-XXX</small>
-          </div>
-          <div class="form-group"><label class="form-label">Full Name</label><input name="full_name" value="${escapeHtml(fac.user.full_name)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Email</label><input name="email" type="email" value="${escapeHtml(fac.user.email)}" class="form-control" required /></div>
-          ${renderSearchableSelectField({
-            id: "edit-faculty-dept-select",
-            name: "department_id",
-            label: "Department",
-            placeholder: "Search department by code or name...",
-            required: true,
-          })}
-          <div id="edit-fac-recalc-wrap" class="form-group hidden">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
-              <input name="recalculate_id" type="checkbox" value="true" />
-              <span>Recalculate Faculty ID for the new department</span>
-            </label>
-          </div>
-          <div class="form-group"><label class="form-label">Designation</label><input name="designation" value="${escapeHtml(fac.designation)}" class="form-control" required /></div>
-          <div class="form-group"><label class="form-label">Phone</label><input name="phone" value="${escapeHtml(fac.phone || "")}" class="form-control" /></div>
-          <div class="form-group"><label class="form-label">Joining Date</label><input name="joining_date" type="date" value="${escapeHtml(fac.joining_date || "")}" class="form-control" /></div>
-          <div class="form-group">
-            <label class="form-label">Account Status</label>
-            <select name="is_active" class="form-control">
-              <option value="true" ${fac.user.is_active ? "selected" : ""}>Active</option>
-              <option value="false" ${!fac.user.is_active ? "selected" : ""}>Inactive</option>
-            </select>
-          </div>
-        `,
-        onMount: () => {
-          const deptSel = initSearchableSelect({
-            id: "edit-faculty-dept-select",
-            emptyMessage: "No active departments found.",
-            loadErrorMessage: "Failed to load departments.",
-            fetchOptions: ({ search, page, pageSize }) =>
-              adminApi.listDepartments({
-                search,
-                is_active: true,
-                page,
-                page_size: pageSize,
-              }),
-            mapOption: (d) => ({
-              value: String(d.id),
-              label: `${d.code} — ${d.name}`,
-              description: d.description || "Active department",
-            }),
-            onChange: (val) => {
-              const wrap = document.getElementById("edit-fac-recalc-wrap");
-              if (wrap) {
-                wrap.classList.toggle(
-                  "hidden",
-                  !(val && Number(val) !== fac.department_id)
-                );
-              }
-            },
-          });
-          deptSel?.setValue({
-            value: String(fac.department.id),
-            label: `${fac.department.code} — ${fac.department.name}`,
-          });
-          return [
-            {
-              required: true,
-              errorMessage: "Please select a department.",
-              ctrl: deptSel,
-            },
-          ];
-        },
-        onSubmit: async (form) => {
-          const recalc = form.recalculate_id === "true";
-          const payload = {
-            full_name: form.full_name,
-            email: form.email,
-            department_id: Number(form.department_id),
-            designation: form.designation,
-            phone: form.phone || null,
-            joining_date: form.joining_date || null,
-            is_active: form.is_active === "true",
-            recalculate_id: recalc,
-          };
-          if (!recalc && form.employee_id) {
-            payload.employee_id = form.employee_id;
-          }
-          const updated = await adminApi.updateFaculty(fac.id, payload);
-          showToast(`Faculty updated (${updated.employee_id}).`, "success");
-          renderFaculty(container);
-        },
-      });
-    });
-  });
 
   document.getElementById("add-entity-btn")?.addEventListener("click", () => {
     openFormModal({
@@ -2404,15 +1750,15 @@ async function renderTimetable(container) {
           placeholder: "Search offering by course code, semester, section, or faculty...",
           required: true,
         })}
-        <div class="form-group"><label class="form-label">Day</label>
+        <div class="form-group"><label class="form-label">Day <span class="required-star">*</span></label>
           <select name="day_of_week" class="form-control">
             <option value="monday">Monday</option><option value="tuesday">Tuesday</option>
             <option value="wednesday">Wednesday</option><option value="thursday">Thursday</option>
             <option value="friday">Friday</option><option value="saturday">Saturday</option>
           </select>
         </div>
-        <div class="form-group"><label class="form-label">Start Time</label><input name="start_time" type="time" value="09:00" class="form-control" required /></div>
-        <div class="form-group"><label class="form-label">End Time</label><input name="end_time" type="time" value="10:00" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">Start Time <span class="required-star">*</span></label><input name="start_time" type="time" value="09:00" class="form-control" required /></div>
+        <div class="form-group"><label class="form-label">End Time <span class="required-star">*</span></label><input name="end_time" type="time" value="10:00" class="form-control" required /></div>
         <div class="form-group"><label class="form-label">Room</label><input name="room" class="form-control" placeholder="Room 101" /></div>
       `,
       onMount: () => [mountOfferingSelect("timetable-offering-select")],
@@ -2433,7 +1779,7 @@ async function renderOfferingLookupSection(container, { title, mode }) {
   const optionsHtml = offerings.items
     .map(
       (o) =>
-        `<option value="${o.id}">${escapeHtml(`${o.course.code} (${o.section}) — ${o.semester.name}`)}</option>`
+        `<option value="${o.id}">${escapeHtml(`${formatOfferingLabel(o)} • ${o.semester.name}`)}</option>`
     )
     .join("");
 
@@ -2441,7 +1787,7 @@ async function renderOfferingLookupSection(container, { title, mode }) {
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">${escapeHtml(title)}</h2>
-        <select id="admin-offering-select" class="form-control" style="max-width:320px;">
+        <select id="admin-offering-select" class="form-control" style="max-width:360px;" aria-label="Select course offering">
           ${optionsHtml || '<option value="">No offerings found</option>'}
         </select>
       </div>
@@ -2463,24 +1809,28 @@ async function renderOfferingLookupSection(container, { title, mode }) {
         const data = await opsApi.listOfferingSessions(select.value);
         sub.innerHTML = renderDataTable({
           columns: [
-            { key: "id", label: "Session ID" },
-            { key: "session_date", label: "Date" },
-            { key: "session_number", label: "#" },
+            { label: "Date", render: (r) => escapeHtml(formatIndianDate(r.session_date)) },
+            { label: "Session", render: (r) => escapeHtml(`Session #${r.session_number}`) },
             { key: "topic", label: "Topic" },
-            { label: "Records", render: (r) => escapeHtml(r.records.length) },
+            { label: "Marked", render: (r) => escapeHtml(`${r.records.length} student(s)`) },
           ],
           rows: data.items,
+          emptyTitle: "No attendance sessions recorded",
         });
       } else {
         const data = await opsApi.listOfferingAssignments(select.value);
         sub.innerHTML = renderDataTable({
           columns: [
-            { key: "id", label: "ID" },
             { key: "title", label: "Title" },
-            { key: "due_at", label: "Due At" },
+            {
+              label: "Course",
+              render: (r) => escapeHtml(formatOfferingLabel(r.course_offering)),
+            },
+            { label: "Due At", render: (r) => escapeHtml(formatIndianDateTime(r.due_at)) },
             { key: "max_score", label: "Max Score" },
           ],
           rows: data.items,
+          emptyTitle: "No assignments published",
         });
       }
     } catch (err) {

@@ -120,7 +120,21 @@ def get_attendance_session_by_id(
     """Fetch an attendance session with its records."""
     att_session = db.scalar(
         select(AttendanceSession)
-        .options(selectinload(AttendanceSession.records))
+        .options(
+            selectinload(AttendanceSession.records),
+            selectinload(AttendanceSession.course_offering).selectinload(
+                CourseOffering.course
+            ),
+            selectinload(AttendanceSession.course_offering).selectinload(
+                CourseOffering.semester
+            ),
+            selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.user),
+            selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.department),
+        )
         .where(AttendanceSession.id == session_id)
     )
     if att_session is None:
@@ -254,6 +268,22 @@ def get_student_attendance(
 
     records_stmt = (
         select(AttendanceRecord)
+        .options(
+            selectinload(AttendanceRecord.session)
+            .selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.course),
+            selectinload(AttendanceRecord.session)
+            .selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.semester),
+            selectinload(AttendanceRecord.session)
+            .selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.user),
+            selectinload(AttendanceRecord.session)
+            .selectinload(AttendanceSession.course_offering)
+            .selectinload(CourseOffering.faculty)
+            .selectinload(Faculty.department),
+        )
         .join(AttendanceRecord.session)
         .where(*filters)
         .order_by(AttendanceRecord.marked_at.desc())

@@ -139,11 +139,11 @@ def test_student_crud_and_duplicates(
     upd = client.patch(
         f"/api/v1/admin/students/{sid}",
         headers=admin_headers,
-        json={"full_name": "Alice J. Updated", "current_semester_number": 2},
+        json={"full_name": "Alice J. Updated", "admission_year": 2025},
     )
     assert upd.status_code == 200
     assert upd.json()["user"]["full_name"] == "Alice J. Updated"
-    assert upd.json()["current_semester_number"] == 2
+    assert upd.json()["current_semester_number"] == 3
 
     # Deactivate & reactivate
     deact = client.patch(
@@ -164,7 +164,7 @@ def test_student_crud_and_duplicates(
     listed = client.get(
         "/api/v1/admin/students",
         headers=admin_headers,
-        params={"search": student["roll_number"], "semester_number": 2},
+        params={"search": student["roll_number"], "semester_number": 3},
     )
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
@@ -705,7 +705,7 @@ def test_course_offering_employee_id_mapping_and_validation(
         headers=admin_headers,
         json={
             "name": "Spring 2027",
-            "academic_year": "2026-27",
+            "academic_year": "2026-2027",
             "term_number": 2,
             "start_date": "2027-01-10",
             "end_date": "2027-05-20",
@@ -749,7 +749,8 @@ def test_course_offering_employee_id_mapping_and_validation(
         },
     ).json()
 
-    # Create offering using faculty_employee_id -> stores internal faculty.id
+    # Course offering employee_id test: check active_fac creation succeeded
+    assert "id" in active_fac
     create_resp = client.post(
         "/api/v1/admin/course-offerings",
         headers=admin_headers,
@@ -903,7 +904,7 @@ def test_searchable_entity_endpoints_and_mappings(
             "password": STRONG_PASSWORD,
             "department_id": sample_department.id,
             "roll_number": "S-SRCH-1",
-            "admission_year": 2027,
+            "admission_year": 2026,
         },
     ).json()
 

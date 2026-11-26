@@ -27,6 +27,12 @@ export const archiveStudent = (id) =>
   apiRequest(`/admin/students/${id}`, { method: "DELETE" });
 export const restoreStudent = (id) =>
   apiRequest(`/admin/students/${id}/restore`, { method: "POST" });
+export const getPromotionPreview = () =>
+  apiRequest("/admin/students/promotion-preview");
+export const promoteStudentsSemester = () =>
+  apiRequest("/admin/students/promote-semester", { method: "POST" });
+export const getAdminDashboardSummary = () =>
+  apiRequest("/admin/students/dashboard-summary");
 
 // Faculty
 export const listFaculty = (params) =>

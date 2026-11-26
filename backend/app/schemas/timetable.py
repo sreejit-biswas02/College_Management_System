@@ -5,6 +5,7 @@ from datetime import datetime, time
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.timetable import DayOfWeek
+from app.schemas.course_offering import CourseOfferingResponse
 
 
 class TimetableSlotCreate(BaseModel):
@@ -46,3 +47,4 @@ class TimetableSlotResponse(BaseModel):
     room: str | None
     created_at: datetime
     updated_at: datetime
+    course_offering: CourseOfferingResponse | None = None

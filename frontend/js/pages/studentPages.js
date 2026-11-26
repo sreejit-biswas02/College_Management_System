@@ -12,48 +12,179 @@ import { closeModal, openModal } from "../components/modal.js";
 import { showToast } from "../components/toast.js";
 import {
   escapeHtml,
+  formatDayOfWeek,
+  formatIndianDate,
+  formatIndianDateTime,
+  formatNoticeAudience,
+  formatOfferingLabel,
+  formatTime12h,
   renderEmptyState,
   renderErrorState,
   renderLoading,
   renderStatusBadge,
 } from "../components/ui.js";
 
+function formatStudentSemesterLabel(profile) {
+  if (profile.is_completed || profile.current_semester_number > 8) {
+    return "Completed (8 Semesters)";
+  }
+  const sem = profile.current_semester_number ?? profile.calculated_semester;
+  return sem ? `Semester ${sem}` : profile.semester_status || "Not configured";
+}
+
 async function renderStudentOverview(container) {
-  const [profile, enrollments, attendance, notices, timetable] =
+  const [profile, enrollments, attendance, notices, timetable, submissions] =
     await Promise.all([
       opsApi.getMyStudentProfile(),
-      opsApi.listMyEnrollments({ page: 1, page_size: 20 }),
-      opsApi.getMyAttendance(),
+      opsApi.listMyEnrollments({ status: "enrolled", page: 1, page_size: 20 }),
+      opsApi.getMyAttendance({ page: 1, page_size: 5 }),
       opsApi.listNotices({ page: 1, page_size: 5 }),
       opsApi.getMyTimetable(),
+      opsApi.listMySubmissions({ page: 1, page_size: 50 }),
     ]);
 
+  const submissionByAssignmentId = new Map(
+    (submissions.items || []).map((s) => [s.assignment_id, s])
+  );
+
+  // Fetch assignments across enrolled offerings in parallel
+  const assignmentLists = await Promise.all(
+    (enrollments.items || []).slice(0, 10).map((e) =>
+      opsApi
+        .listOfferingAssignments(e.course_offering.id, { page: 1, page_size: 10 })
+        .then((res) => res.items || [])
+        .catch(() => [])
+    )
+  );
+  const allAssignments = assignmentLists
+    .flat()
+    .sort((a, b) => new Date(a.due_at) - new Date(b.due_at))
+    .slice(0, 6);
+
+  const gradedCount = (submissions.items || []).filter(
+    (s) => s.score !== null && s.score !== undefined
+  ).length;
+
   container.innerHTML = `
-    <section class="stats-grid">
-      <div class="stat-card">
-        <div class="text-muted">Student ID</div>
-        <div class="stat-value" style="font-size:1.15rem;">${escapeHtml(profile.roll_number)}</div>
+    <section class="card" style="margin-bottom:1.25rem;">
+      <div class="card-header" style="margin-bottom:0.75rem;">
+        <div>
+          <h2 class="card-title">${escapeHtml(profile.user.full_name)}</h2>
+          <p class="text-muted" style="font-size:0.875rem;">
+            ${escapeHtml(profile.roll_number)} &bull;
+            ${escapeHtml(`${profile.department.code} — ${profile.department.name}`)} &bull;
+            ${escapeHtml(formatStudentSemesterLabel(profile))} &bull;
+            Batch ${escapeHtml(profile.admission_academic_year || `${profile.admission_year}-${profile.admission_year + 1}`)}
+          </p>
+        </div>
+        ${renderStatusBadge(profile.user.is_active ? "Active" : "Inactive", profile.user.is_active ? "success" : "danger")}
       </div>
+    </section>
+
+    <section class="stats-grid">
       <div class="stat-card">
         <div class="text-muted">Enrolled Courses</div>
         <div class="stat-value">${escapeHtml(enrollments.total)}</div>
+        <div class="stat-subtext">${escapeHtml(formatStudentSemesterLabel(profile))}</div>
       </div>
       <div class="stat-card">
         <div class="text-muted">Attendance</div>
         <div class="stat-value">${escapeHtml(attendance.attendance_percentage)}%</div>
+        <div class="stat-subtext">${escapeHtml(`${attendance.present} present / ${attendance.total_sessions} sessions`)}</div>
+      </div>
+      <div class="stat-card">
+        <div class="text-muted">Submissions</div>
+        <div class="stat-value">${escapeHtml(submissions.total)}</div>
+        <div class="stat-subtext">${escapeHtml(`${gradedCount} graded`)}</div>
       </div>
       <div class="stat-card">
         <div class="text-muted">Weekly Classes</div>
         <div class="stat-value">${escapeHtml(timetable.length)}</div>
+        <div class="stat-subtext">Scheduled slots</div>
       </div>
     </section>
 
-    <section class="card">
+    <div class="dashboard-grid">
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Upcoming Assignments &amp; Status</h2></div>
+        ${renderDataTable({
+          columns: [
+            { label: "Assignment", key: "title" },
+            {
+              label: "Course",
+              render: (r) =>
+                escapeHtml(
+                  r.course_offering?.course
+                    ? `${r.course_offering.course.code} (${r.course_offering.section})`
+                    : "—"
+                ),
+            },
+            { label: "Due", render: (r) => escapeHtml(formatIndianDateTime(r.due_at)) },
+            {
+              label: "Status",
+              render: (r) => {
+                const sub = submissionByAssignmentId.get(r.id);
+                if (sub) {
+                  return sub.score !== null && sub.score !== undefined
+                    ? renderStatusBadge(`Graded: ${sub.score}/${r.max_score}`, "success")
+                    : renderStatusBadge("Submitted", "info");
+                }
+                const overdue = new Date(r.due_at) < new Date();
+                return renderStatusBadge(
+                  overdue ? "Overdue" : "Pending",
+                  overdue ? "danger" : "warning"
+                );
+              },
+            },
+          ],
+          rows: allAssignments,
+          emptyTitle: "No assignments scheduled",
+          emptyDescription: "Assignments for your enrolled courses will appear here.",
+        })}
+      </section>
+
+      <section class="card">
+        <div class="card-header"><h2 class="card-title">Weekly Timetable</h2></div>
+        ${renderDataTable({
+          columns: [
+            { label: "Day", render: (r) => escapeHtml(formatDayOfWeek(r.day_of_week)) },
+            {
+              label: "Time",
+              render: (r) =>
+                escapeHtml(`${formatTime12h(r.start_time)} – ${formatTime12h(r.end_time)}`),
+            },
+            {
+              label: "Course",
+              render: (r) =>
+                escapeHtml(
+                  r.course_offering?.course
+                    ? `${r.course_offering.course.code} (${r.course_offering.section})`
+                    : "Not assigned"
+                ),
+            },
+            { label: "Room", render: (r) => escapeHtml(r.room || "TBA") },
+          ],
+          rows: timetable.slice(0, 6),
+          emptyTitle: "No timetable slots",
+          emptyDescription: "Your weekly class schedule will appear here once published.",
+        })}
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:1.25rem;">
       <div class="card-header"><h2 class="card-title">Recent Notices</h2></div>
       ${renderDataTable({
         columns: [
           { key: "title", label: "Title" },
-          { key: "body", label: "Message" },
+          { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+          {
+            label: "Published By",
+            render: (r) => escapeHtml(r.posted_by_user?.full_name || "Administration"),
+          },
+          {
+            label: "Published",
+            render: (r) => escapeHtml(formatIndianDateTime(r.published_at)),
+          },
         ],
         rows: notices.items,
         emptyTitle: "No notices available",
@@ -64,25 +195,48 @@ async function renderStudentOverview(container) {
 
 async function renderStudentProfile(container) {
   const profile = await opsApi.getMyStudentProfile();
+  const batch =
+    profile.admission_academic_year ||
+    `${profile.admission_year}-${profile.admission_year + 1}`;
   container.innerHTML = `
     <section class="card">
-      <div class="card-header"><h2 class="card-title">My Student Profile</h2></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;">
-        <div><div class="text-muted">Full Name</div><strong>${escapeHtml(profile.user.full_name)}</strong></div>
-        <div><div class="text-muted">Email</div><strong>${escapeHtml(profile.user.email)}</strong></div>
-        <div><div class="text-muted">Student ID</div><strong>${escapeHtml(profile.roll_number)}</strong></div>
-        <div><div class="text-muted">Department</div><strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong></div>
-        <div><div class="text-muted">Semester</div><strong>${escapeHtml(
-          profile.is_completed
-            ? "Completed (8 Semesters)"
-            : profile.calculated_semester
-              ? `Semester ${profile.calculated_semester}`
-              : profile.semester_status || `Semester ${profile.current_semester_number}`
-        )}</strong></div>
-        <div><div class="text-muted">Admission Academic Year</div><strong>${escapeHtml(
-          profile.admission_academic_year ||
-            `${profile.admission_year}-${profile.admission_year + 1}`
-        )}</strong></div>
+      <div class="card-header">
+        <h2 class="card-title">My Student Profile</h2>
+        ${renderStatusBadge(profile.user.is_active ? "Active" : "Inactive", profile.user.is_active ? "success" : "danger")}
+      </div>
+      <div class="profile-grid">
+        <div class="profile-field">
+          <div class="profile-field-label">Full Name</div>
+          <strong>${escapeHtml(profile.user.full_name)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Email</div>
+          <strong>${escapeHtml(profile.user.email)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Student ID</div>
+          <strong>${escapeHtml(profile.roll_number)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Department</div>
+          <strong>${escapeHtml(`${profile.department.code} — ${profile.department.name}`)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Current Semester</div>
+          <strong>${escapeHtml(formatStudentSemesterLabel(profile))}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Admission Academic Year</div>
+          <strong>${escapeHtml(batch)}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Phone</div>
+          <strong>${escapeHtml(profile.phone || "Not provided")}</strong>
+        </div>
+        <div class="profile-field">
+          <div class="profile-field-label">Date of Birth</div>
+          <strong>${escapeHtml(profile.date_of_birth ? formatIndianDate(profile.date_of_birth) : "Not provided")}</strong>
+        </div>
       </div>
     </section>
   `;
@@ -95,11 +249,29 @@ async function renderStudentCourses(container) {
       <div class="card-header"><h2 class="card-title">My Enrolled Courses</h2></div>
       ${renderDataTable({
         columns: [
-          { label: "Code", render: (r) => escapeHtml(r.course_offering.course.code) },
-          { label: "Title", render: (r) => escapeHtml(r.course_offering.course.title) },
+          {
+            label: "Course",
+            render: (r) =>
+              escapeHtml(
+                `${r.course_offering.course.code} — ${r.course_offering.course.title}`
+              ),
+          },
           { label: "Section", render: (r) => escapeHtml(r.course_offering.section) },
-          { label: "Faculty", render: (r) => escapeHtml(r.course_offering.faculty.user.full_name) },
-          { label: "Semester", render: (r) => escapeHtml(r.course_offering.semester.name) },
+          { label: "Credits", render: (r) => escapeHtml(r.course_offering.course.credits) },
+          {
+            label: "Faculty",
+            render: (r) =>
+              escapeHtml(
+                `${r.course_offering.faculty.employee_id} — ${r.course_offering.faculty.user.full_name}`
+              ),
+          },
+          {
+            label: "Semester",
+            render: (r) =>
+              escapeHtml(
+                `${r.course_offering.semester.name} (${r.course_offering.semester.academic_year})`
+              ),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -117,10 +289,14 @@ async function renderStudentCourses(container) {
 }
 
 async function renderStudentAttendance(container) {
-  const summary = await opsApi.getMyAttendance();
+  const summary = await opsApi.getMyAttendance({ page: 1, page_size: 100 });
   container.innerHTML = `
     <section class="stats-grid">
-      <div class="stat-card"><div class="text-muted">Attendance %</div><div class="stat-value">${escapeHtml(summary.attendance_percentage)}%</div></div>
+      <div class="stat-card">
+        <div class="text-muted">Attendance %</div>
+        <div class="stat-value">${escapeHtml(summary.attendance_percentage)}%</div>
+        <div class="stat-subtext">${escapeHtml(`${summary.late} late • ${summary.excused} excused`)}</div>
+      </div>
       <div class="stat-card"><div class="text-muted">Total Sessions</div><div class="stat-value">${escapeHtml(summary.total_sessions)}</div></div>
       <div class="stat-card"><div class="text-muted">Present</div><div class="stat-value">${escapeHtml(summary.present)}</div></div>
       <div class="stat-card"><div class="text-muted">Absent</div><div class="stat-value">${escapeHtml(summary.absent)}</div></div>
@@ -129,7 +305,24 @@ async function renderStudentAttendance(container) {
       <div class="card-header"><h2 class="card-title">Attendance History</h2></div>
       ${renderDataTable({
         columns: [
-          { key: "session_id", label: "Session ID" },
+          {
+            label: "Course",
+            render: (r) =>
+              escapeHtml(formatOfferingLabel(r.session?.course_offering, "Not available")),
+          },
+          {
+            label: "Session Date",
+            render: (r) =>
+              r.session
+                ? escapeHtml(
+                    `${formatIndianDate(r.session.session_date)} (Session #${r.session.session_number})`
+                  )
+                : "Not available",
+          },
+          {
+            label: "Topic",
+            render: (r) => escapeHtml(r.session?.topic || "—"),
+          },
           {
             label: "Status",
             render: (r) =>
@@ -143,7 +336,10 @@ async function renderStudentAttendance(container) {
               ),
           },
           { key: "remarks", label: "Remarks" },
-          { key: "marked_at", label: "Marked At" },
+          {
+            label: "Marked At",
+            render: (r) => escapeHtml(formatIndianDateTime(r.marked_at)),
+          },
         ],
         rows: summary.records,
         emptyTitle: "No attendance records yet",
@@ -153,25 +349,28 @@ async function renderStudentAttendance(container) {
 }
 
 async function renderStudentAssignments(container) {
-  const enrollments = await opsApi.listMyEnrollments({
-    status: "enrolled",
-    page: 1,
-    page_size: 50,
-  });
+  const [enrollments, mySubmissions] = await Promise.all([
+    opsApi.listMyEnrollments({ status: "enrolled", page: 1, page_size: 50 }),
+    opsApi.listMySubmissions({ page: 1, page_size: 100 }),
+  ]);
   if (!enrollments.items.length) {
     container.innerHTML = `<section class="card">${renderEmptyState("No enrolled courses")}</section>`;
     return;
   }
 
+  const submissionsByAsg = new Map(
+    (mySubmissions.items || []).map((s) => [s.assignment_id, s])
+  );
+
   container.innerHTML = `
     <section class="card">
       <div class="card-header">
         <h2 class="card-title">My Assignments</h2>
-        <select id="stu-offering-select" class="form-control" style="max-width:300px;">
+        <select id="stu-offering-select" class="form-control" style="max-width:340px;" aria-label="Filter by course offering">
           ${enrollments.items
             .map(
               (e) =>
-                `<option value="${e.course_offering.id}">${escapeHtml(`${e.course_offering.course.code} (${e.course_offering.section})`)}</option>`
+                `<option value="${e.course_offering.id}">${escapeHtml(formatOfferingLabel(e.course_offering))}</option>`
             )
             .join("")}
         </select>
@@ -198,8 +397,24 @@ async function renderStudentAssignments(container) {
     tableEl.innerHTML = renderDataTable({
       columns: [
         { key: "title", label: "Title" },
-        { key: "due_at", label: "Due At" },
+        { label: "Due At", render: (r) => escapeHtml(formatIndianDateTime(r.due_at)) },
         { key: "max_score", label: "Max Score" },
+        {
+          label: "Status",
+          render: (r) => {
+            const sub = submissionsByAsg.get(r.id);
+            if (sub) {
+              return sub.score !== null && sub.score !== undefined
+                ? renderStatusBadge(`Graded (${sub.score}/${r.max_score})`, "success")
+                : renderStatusBadge("Submitted", "info");
+            }
+            const overdue = new Date(r.due_at) < new Date();
+            return renderStatusBadge(
+              overdue ? "Overdue" : "Open",
+              overdue ? "danger" : "warning"
+            );
+          },
+        },
         {
           label: "Materials",
           render: (r) =>
@@ -207,8 +422,13 @@ async function renderStudentAssignments(container) {
         },
         {
           label: "Action",
-          render: (r) =>
-            `<button class="btn btn-primary btn-sm submit-asg-btn" data-id="${r.id}" data-title="${escapeHtml(r.title)}" type="button">Submit</button>`,
+          render: (r) => {
+            const sub = submissionsByAsg.get(r.id);
+            if (sub) {
+              return '<span class="text-muted">Already submitted</span>';
+            }
+            return `<button class="btn btn-primary btn-sm submit-asg-btn" data-id="${r.id}" data-title="${escapeHtml(r.title)}" type="button">Submit</button>`;
+          },
         },
       ],
       rows: data.items,
@@ -298,8 +518,10 @@ async function renderStudentAssignments(container) {
                 progEl.textContent = `Uploading ${files[i].name} (${i + 1}/${files.length}): ${pct}%`;
               });
             }
+            submissionsByAsg.set(Number(btn.dataset.id), submission);
             closeModal();
             showToast("Assignment submitted!", "success");
+            await load();
           } catch (err) {
             showToast(err.message || "Submission failed.", "error");
           } finally {
@@ -321,8 +543,20 @@ async function renderStudentSubmissions(container) {
       <div class="card-header"><h2 class="card-title">My Submissions &amp; Grades</h2></div>
       ${renderDataTable({
         columns: [
-          { key: "assignment_id", label: "Assignment ID" },
-          { key: "submitted_at", label: "Submitted At" },
+          {
+            label: "Assignment",
+            render: (r) =>
+              escapeHtml(r.assignment?.title || `Assignment #${r.assignment_id}`),
+          },
+          {
+            label: "Course",
+            render: (r) =>
+              escapeHtml(formatOfferingLabel(r.assignment?.course_offering, "Not available")),
+          },
+          {
+            label: "Submitted At",
+            render: (r) => escapeHtml(formatIndianDateTime(r.submitted_at)),
+          },
           {
             label: "Attachments",
             render: (r) =>
@@ -331,7 +565,12 @@ async function renderStudentSubmissions(container) {
           {
             label: "Score",
             render: (r) =>
-              r.score !== null ? escapeHtml(r.score) : renderStatusBadge("Pending", "warning"),
+              r.score !== null && r.score !== undefined
+                ? renderStatusBadge(
+                    `${r.score} / ${r.assignment?.max_score ?? "—"}`,
+                    "success"
+                  )
+                : renderStatusBadge("Pending", "warning"),
           },
           { key: "feedback", label: "Feedback" },
         ],
@@ -352,7 +591,15 @@ async function renderStudentNotices(container) {
         columns: [
           { key: "title", label: "Title" },
           { key: "body", label: "Message" },
-          { key: "published_at", label: "Published" },
+          { label: "Audience", render: (r) => escapeHtml(formatNoticeAudience(r)) },
+          {
+            label: "Published By",
+            render: (r) => escapeHtml(r.posted_by_user?.full_name || "Administration"),
+          },
+          {
+            label: "Published",
+            render: (r) => escapeHtml(formatIndianDateTime(r.published_at)),
+          },
         ],
         rows: data.items,
         emptyTitle: "No notices available",
@@ -368,11 +615,27 @@ async function renderStudentTimetable(container) {
       <div class="card-header"><h2 class="card-title">My Weekly Timetable</h2></div>
       ${renderDataTable({
         columns: [
-          { key: "day_of_week", label: "Day" },
-          { key: "start_time", label: "Start" },
-          { key: "end_time", label: "End" },
-          { key: "course_offering_id", label: "Offering ID" },
-          { key: "room", label: "Room" },
+          { label: "Day", render: (r) => escapeHtml(formatDayOfWeek(r.day_of_week)) },
+          {
+            label: "Time",
+            render: (r) =>
+              escapeHtml(`${formatTime12h(r.start_time)} – ${formatTime12h(r.end_time)}`),
+          },
+          {
+            label: "Course",
+            render: (r) =>
+              escapeHtml(formatOfferingLabel(r.course_offering, "Not assigned")),
+          },
+          {
+            label: "Faculty",
+            render: (r) =>
+              escapeHtml(
+                r.course_offering?.faculty
+                  ? `${r.course_offering.faculty.employee_id} — ${r.course_offering.faculty.user.full_name}`
+                  : "Not assigned"
+              ),
+          },
+          { label: "Room", render: (r) => escapeHtml(r.room || "TBA") },
         ],
         rows: slots,
         emptyTitle: "No timetable slots found",
