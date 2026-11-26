@@ -431,6 +431,7 @@ For setup issues, provide the error message and the command that
 produced it, but remove passwords, tokens, connection strings, and other
 secrets before sharing logs.
 
+
 ------------------------------------------------------------------------
 
 **Thank you for evaluating the College Management System.**
