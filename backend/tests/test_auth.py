@@ -463,3 +463,109 @@ def test_resource_ownership_restrictions(
 
     # Verify Student model relationship integrity still holds.
     assert db_session.get(Student, stu1_id) is not None
+
+
+def test_public_registration_blocked_in_production_and_admin_creation_works(
+    client: TestClient,
+    db_session: Session,
+    department: Department,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Block public registration in production while preserving Admin creation."""
+    from app.core.config import get_settings
+
+    prod_settings = get_settings().model_copy(update={"ENVIRONMENT": "production"})
+    monkeypatch.setattr("app.routers.auth.get_settings", lambda: prod_settings)
+
+    assert (
+        client.post(
+            "/api/v1/auth/register/student",
+            json={
+                "email": "prod.stu@example.edu",
+                "full_name": "Prod Student",
+                "password": STRONG_PASSWORD,
+                "department_id": department.id,
+                "roll_number": "MANUAL-01",
+                "admission_year": 2026,
+            },
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/register/faculty",
+            json={
+                "email": "prod.fac@example.edu",
+                "full_name": "Prod Faculty",
+                "password": STRONG_PASSWORD,
+                "department_id": department.id,
+                "employee_id": "MANUAL-F1",
+                "designation": "Lecturer",
+            },
+        ).status_code
+        == 403
+    )
+    for role in ("student", "faculty", "admin"):
+        assert (
+            client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": f"prod.{role}@example.edu",
+                    "full_name": f"Prod {role}",
+                    "password": STRONG_PASSWORD,
+                    "role": role,
+                    "department_id": department.id,
+                    "roll_number": "MANUAL-X",
+                    "admission_year": 2026,
+                    "employee_id": "MANUAL-FX",
+                    "designation": "Lecturer",
+                },
+            ).status_code
+            == 403
+        )
+
+    # Admin-managed student & faculty creation still works with auto ID & semester
+    create_admin_user(
+        db_session,
+        AdminCreateRequest(
+            email="prod.admin@example.edu",
+            full_name="Prod Admin",
+            password=STRONG_PASSWORD,
+        ),
+    )
+    login_resp = client.post(
+        "/api/v1/auth/login",
+        json={"email": "prod.admin@example.edu", "password": STRONG_PASSWORD},
+    )
+    assert login_resp.status_code == 200
+    admin_headers = {"Authorization": f"Bearer {login_resp.json()['access_token']}"}
+
+    stu_resp = client.post(
+        "/api/v1/admin/students",
+        headers=admin_headers,
+        json={
+            "email": "managed.stu@example.edu",
+            "full_name": "Managed Student",
+            "password": STRONG_PASSWORD,
+            "department_id": department.id,
+            "admission_year": 2026,
+        },
+    )
+    assert stu_resp.status_code == 201
+    stu_data = stu_resp.json()
+    assert stu_data["roll_number"].startswith(f"S-{department.code}-2026-")
+    assert stu_data["current_semester_number"] == 1
+
+    fac_resp = client.post(
+        "/api/v1/admin/faculty",
+        headers=admin_headers,
+        json={
+            "email": "managed.fac@example.edu",
+            "full_name": "Managed Faculty",
+            "password": STRONG_PASSWORD,
+            "department_id": department.id,
+            "designation": "Assistant Professor",
+        },
+    )
+    assert fac_resp.status_code == 201
+    assert fac_resp.json()["employee_id"].startswith(f"F-{department.code}-")

@@ -45,6 +45,18 @@ from app.services.auth_service import (
 router = APIRouter(tags=["Authentication & Authorization"])
 
 
+def _reject_public_registration_in_production() -> None:
+    """Disable unauthenticated self-registration in production."""
+    if get_settings().is_production:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Public registration is disabled in production. "
+                "Contact an administrator to create your account."
+            ),
+        )
+
+
 @router.post(
     "/auth/register/student",
     response_model=RegisterResponse,
@@ -55,6 +67,7 @@ def register_student_endpoint(
     db: Annotated[Session, Depends(get_db)],
 ) -> RegisterResponse:
     """Register a new student account and linked student profile."""
+    _reject_public_registration_in_production()
     try:
         user, student = register_student(db, payload)
     except (EmailAlreadyExistsError, ProfileConflictError) as exc:
@@ -84,6 +97,7 @@ def register_faculty_endpoint(
     db: Annotated[Session, Depends(get_db)],
 ) -> RegisterResponse:
     """Register a new faculty account and linked faculty profile."""
+    _reject_public_registration_in_production()
     try:
         user, faculty = register_faculty(db, payload)
     except (EmailAlreadyExistsError, ProfileConflictError) as exc:
@@ -113,6 +127,7 @@ def public_register_endpoint(
     db: Annotated[Session, Depends(get_db)],
 ) -> RegisterResponse:
     """Public registration endpoint; explicitly blocks ADMIN registration."""
+    _reject_public_registration_in_production()
     if payload.role == UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

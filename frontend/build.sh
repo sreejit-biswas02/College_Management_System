@@ -76,4 +76,17 @@ fi
 
 printf '%s\n' "$SAFE_CONFIG_JS" > "$DIST_DIR/js/runtime-config.js"
 
+BUILD_VER="$(printf '%s' "${CF_PAGES_COMMIT_SHA:-$(date +%s)}" | tr -cd '[:alnum:]_-' | cut -c1-12)"
+if [ -n "$BUILD_VER" ]; then
+  BUILD_VER="$BUILD_VER" DIST_INDEX="$DIST_DIR/index.html" python3 - <<'PY'
+import os
+from pathlib import Path
+
+index_path = Path(os.environ["DIST_INDEX"])
+ver = os.environ["BUILD_VER"]
+html = index_path.read_text(encoding="utf-8")
+index_path.write_text(html.replace("?v=5", f"?v={ver}"), encoding="utf-8")
+PY
+fi
+
 echo "Static build complete in $DIST_DIR (API_BASE_URL=$API_URL)"
